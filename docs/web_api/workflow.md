@@ -337,8 +337,11 @@ Workflow SSE 只覆盖有 `workflow_run_id` 的主分析链路事件。`report_g
 
 | 内部事件 | Web SSE event_type |
 | --- | --- |
-| `search.task_queued` | `connector_started` |
+| `search.task_queued` | `connector_progress` |
+| `search.source_started` | `connector_started` |
 | `search.item_found` | `raw_item_collected` |
+| `search.source_failed` | `connector_progress` |
+| `search.task_completed` | `connector_progress` |
 | `search.item_ingested` | `evidence_normalized` |
 | `evidence.structure_saved` | `evidence_structured` |
 | `agent.argument_saved` | `agent_argument_completed` |

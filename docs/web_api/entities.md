@@ -51,6 +51,11 @@ GET /api/v1/entities/{entity_id}/evidence?limit=50&offset=0
 
 响应为 Evidence 列表。
 
+前端注解：
+
+- 这是跨 workflow 或无 workflow Evidence 的公开查询入口。
+- 如果需要某次主分析链路内的 Evidence，使用 `GET /api/v1/workflow-runs/{workflow_run_id}/evidence`。
+
 ### 12.4 查询实体关系
 
 ```http

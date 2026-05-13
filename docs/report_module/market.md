@@ -16,7 +16,7 @@
 前端注解：
 
 - 行情页可以直接使用本节接口。
-- 如果响应里 `data_state=pending_refresh` 或 `stale`，页面应展示当前可用数据和刷新状态，不要假设这次请求已经拿到完整实时行情。
+- 如果响应里 `data_state=refreshing` 或 `stale`，页面应展示当前可用数据和刷新状态，不要假设这次请求已经拿到完整实时行情。
 - 用户从行情或预警进入分析时，应创建或选择 `workflow_run`，不要把 market 响应当成最终分析依据。
 
 ## 2. 查询指数看板
@@ -67,7 +67,7 @@ GET /api/v1/market/index-overview?refresh=stale
 | 字段 | 说明 |
 | --- | --- |
 | `snapshot_id` | 主系统市场快照 ID，证明行情值来自已入库结果。 |
-| `data_state` | `ready`、`stale`、`partial`、`pending_refresh`。 |
+| `data_state` | `ready`、`stale`、`partial`、`refreshing`。 |
 | `refresh_task_id` | 异步刷新任务 ID；只有后端触发刷新时返回。 |
 | `market_sentiment` | 基于 MarketSnapshot 的市场情绪视图，不等于 Judge 结论。 |
 

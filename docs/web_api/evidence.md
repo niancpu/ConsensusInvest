@@ -2,6 +2,12 @@
 
 本文档定义 Raw Item、Evidence、Evidence Structure 和 Evidence References。
 
+## 查询边界
+
+- `/workflow-runs/{workflow_run_id}/raw-items`、`/workflow-runs/{workflow_run_id}/evidence`、`/workflow-runs/{workflow_run_id}/evidence-references` 只查询某次主 workflow 关联的数据。
+- 跨 workflow 或无 workflow 的 Evidence 不新增按 `ticker` 直接查询入口；前端需要股票/实体维度证据时，使用 `GET /api/v1/entities/{entity_id}/evidence` 或 Report Module 视图接口。
+- 已知 `raw_ref` / `evidence_id` 时，可以直接使用详情接口下钻。
+
 ## 6. Raw Items
 
 ### 6.1 查询 Raw Item 列表

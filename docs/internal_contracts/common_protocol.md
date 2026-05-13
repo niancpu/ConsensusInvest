@@ -128,16 +128,19 @@ cancelled
 
 | 内部事件 | Web SSE event_type | 说明 |
 | --- | --- | --- |
-| `search.task_queued` | `connector_started` 或 `refresh_task_queued` | 主 workflow 内搜索映射为 connector 事件；`report_generation` 补齐映射为 refresh 事件。 |
+| `search.task_queued` | `connector_progress` | 仅主 workflow 内搜索投影到 workflow SSE；无 `workflow_run_id` 的补齐不挂到 workflow SSE。 |
+| `search.source_started` | `connector_started` | 主 workflow 内某个 source 开始采集。 |
 | `search.item_found` | `raw_item_collected` | 仅表示发现原始项；最终可查询状态以 Raw/Evidence 资源为准。 |
+| `search.source_failed` | `connector_progress` | 单个 source 失败不等于 workflow 失败；失败细节放在 payload。 |
+| `search.task_completed` | `connector_progress` | 搜索任务阶段状态提示；最终资源状态以查询接口为准。 |
 | `search.item_ingested` | `evidence_normalized` | Evidence Store 入库后才能对外暴露 Evidence ID。 |
 | `evidence.structure_saved` | `evidence_structured` | 结构化结果保存后投影。 |
 | `agent.argument_saved` | `agent_argument_completed` | Agent 论点持久化后投影；实时 delta 由运行时另行产生。 |
 | `round.summary_saved` | `round_summary_completed` | Round Summary 持久化后投影。 |
 | `judge.tool_called` | `judge_tool_call_completed` | 只暴露工具名、输入摘要、结果引用，不暴露模型私有思考。 |
 | `judge.completed` | `judgment_completed` | Judgment 持久化后投影。 |
-| `report.view_built` | `report_view_built` | 报告视图生成完成；不代表主 workflow 完成。 |
-| `report.refresh_requested` | `refresh_task_queued` | Report Module 已提交异步补齐任务。 |
+| `report.view_built` | 不投影到 workflow SSE | Report Module 事件通过报告视图响应或后续独立 report 事件入口消费。 |
+| `report.refresh_requested` | 不投影到 workflow SSE | Report Module 已提交异步补齐任务；当前响应使用 `data_state=refreshing` 和 `refresh_task_id` 表达。 |
 
 投影约束：
 

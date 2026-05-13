@@ -39,4 +39,4 @@ Report Module 不负责：
 
 - 需要透明推理链路时，使用 `docs/web_api` 的 `workflow-runs`、`events`、`snapshot`、`trace`、`evidence`、`judgment`。
 - 需要承接旧页面、行情页、轻量个股卡片时，使用本目录接口。
-- 本目录接口返回的 `summary`、`benefits`、`risks`、`event ranking` 都是已有 Evidence Structure、MarketSnapshot、Entity 或主链路 Judgment 的视图投影；点击下钻必须能回到 Evidence、MarketSnapshot、Entity、Workflow 或主链路 Judgment。
+- 本目录接口返回的 `summary`、`risks`、`event ranking` 都是已有 Evidence Structure、MarketSnapshot、Entity 或主链路 Judgment 的视图投影；`benefits`、`action`、`direction` 等方向性字段只能来自主链路 Judgment。点击下钻必须能回到 Evidence、MarketSnapshot、Entity、Workflow 或主链路 Judgment。

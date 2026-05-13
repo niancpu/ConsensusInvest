@@ -76,13 +76,13 @@ GET /api/v1/stocks/search?keyword={keyword}&limit=10
 | `entity_id` | 主系统实体 ID，用于跳转实体详情、关系网络或创建 workflow。 |
 | `evidence_matches` | 从 Evidence Store 返回的相关证据摘要；这是搜索结果的一部分，不代表 Report Module 生产了证据。 |
 | `match.type` | 命中来源，例如 `entity`、`evidence`、`entity_and_evidence`。 |
-| `data_state` | `ready` 表示已有数据足够；`partial` 表示只返回部分命中；`pending_refresh` 表示后端已异步触发搜索/刷新。 |
+| `data_state` | `ready` 表示已有数据足够；`partial` 表示只返回部分命中；`refreshing` 表示后端已异步触发搜索/刷新。 |
 
 前端注解：
 
 - 搜索框可以直接展示 `stock_code`、`name` 和 `evidence_matches` 的摘要。
 - 创建主分析任务时，优先传 `entity_id` 或 `stock_code` 给 `POST /api/v1/workflow-runs`。
-- 如果 `data_state=pending_refresh`，不要在当前请求里等待；展示当前结果，并允许用户稍后刷新。
+- 如果 `data_state=refreshing`，不要在当前请求里等待；展示当前结果，并允许用户稍后刷新。
 
 ## 3. 查询个股研究聚合视图
 
@@ -165,7 +165,7 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
 - 无 `workflow_run_id` 时，可读取该股票最新可用的主链路 Judgment、Evidence、Entity 信息。
 - 若主链路没有结果，接口仍可返回 Entity / Evidence / MarketSnapshot 组成的 `report_generation` 轻量视图，但 `workflow_run_id` 和 `judgment_id` 为空。
 - 当 `judgment_id` 为空时，`action` 和 `benefits` 必须为空；Report Module 只能返回客观摘要、事件列表、Evidence Structure 中已有的风险披露、MarketSnapshot 和限制说明。
-- 若 `refresh=missing` 或 `refresh=stale` 且数据不足，后端可以异步提交搜索/刷新请求，并返回 `data_state=pending_refresh` 和 `refresh_task_id`。
+- 若 `refresh=missing` 或 `refresh=stale` 且数据不足，后端可以异步提交搜索/刷新请求，并返回 `data_state=refreshing` 和 `refresh_task_id`。
 - 该接口不启动 `workflow-runs`，也不生成主链路 Judgment。
 
 前端注解：
@@ -251,7 +251,7 @@ GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_r
 前端注解：
 
 - `impact_score` 是 Report Module 基于已有引用做的排序分，不等于 Evidence 可信度，也不等于最终投资信号。
-- `direction` 只能在存在 `workflow_run_id` / `judgment_id` 或上游 Evidence Structure 已明确标注客观影响方向时返回；若要展示主链路 Bull/Bear 论证，应跳转到 workflow trace。
+- `direction` 只能在存在 `workflow_run_id` / `judgment_id` 且来源为主链路 Judgment 时返回；Report Module 不能基于 Evidence Structure 自行生成方向性归纳。若要展示主链路 Bull/Bear 论证，应跳转到 workflow trace。
 
 ## 6. 查询利好与风险聚合视图
 

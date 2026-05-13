@@ -113,7 +113,6 @@ with_workflow_trace
 ready
 partial
 missing
-pending_refresh
 refreshing
 stale
 failed
@@ -125,7 +124,7 @@ failed
 - `stage` 是当前执行阶段。
 - `reference_role` 是引用关系，不是 Evidence 自身属性。
 - `report_generation` 不创建 `workflow_run_id`，也不产生 `judgment_id`。
-- `pending_refresh` / `refreshing` 只表示后端已提交异步补齐，不表示当前响应包含新数据。
+- `refreshing` 只表示后端已提交异步补齐，不表示当前响应包含新数据。
 
 
 ## 19. MVP 取舍与未决项
