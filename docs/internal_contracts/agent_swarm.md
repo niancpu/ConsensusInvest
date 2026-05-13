@@ -170,17 +170,25 @@ Judge 工具调用记录：
 ```json
 {
   "tool_call_id": "jtc_20260513_002594_001",
+  "judgment_id": "jdg_20260513_002594_001",
   "tool_name": "get_evidence_detail",
-  "arguments": {
+  "input": {
     "evidence_id": "ev_20260513_002594_tushare_001"
   },
   "result_ref": {
     "evidence_id": "ev_20260513_002594_tushare_001",
     "raw_ref": "raw_20260513_002594_tushare_001"
   },
+  "output_summary": "source_quality=0.9，structuring_confidence=0.82。",
+  "referenced_evidence_ids": ["ev_20260513_002594_tushare_001"],
   "used_for": "verify_profit_growth_claim"
 }
 ```
+
+公开 API 投影：
+
+- `input`、`output_summary`、`referenced_evidence_ids` 直接投影到 `GET /api/v1/judgments/{judgment_id}/tool-calls`。
+- `result_ref` 用于内部回查和 trace 构建，公开接口可以按权限裁剪，但不能删除工具调用记录本身。
 
 Judge 输出：
 
@@ -188,19 +196,28 @@ Judge 输出：
 {
   "judgment_id": "jdg_20260513_002594_001",
   "workflow_run_id": "wr_20260513_002594_000001",
-  "conclusion": "watch",
+  "final_signal": "neutral",
   "confidence": 0.74,
-  "summary": "中期基本面有支撑，但现金流和估值仍需复核。",
-  "key_evidence_ids": ["ev_20260513_002594_tushare_001"],
-  "major_risks": [
-    {
-      "text": "现金流质量低于利润增速。",
-      "evidence_ids": ["ev_20260513_002594_report_003"]
-    }
-  ],
+  "time_horizon": "short_to_mid_term",
+  "key_positive_evidence_ids": ["ev_20260513_002594_tushare_001"],
+  "key_negative_evidence_ids": ["ev_20260513_002594_report_003"],
+  "reasoning": "中期基本面有支撑，但现金流和估值仍需复核。",
+  "risk_notes": ["现金流质量低于利润增速。"],
+  "suggested_next_checks": ["补充最新同行横向估值对比"],
+  "referenced_agent_argument_ids": ["arg_20260513_bull_v1_r1_001"],
   "limitations": ["缺少最新同行横向估值对比"]
 }
 ```
+
+字段约束：
+
+| 字段 | 说明 |
+| --- | --- |
+| `final_signal` | Judge Runtime 的最终信号字段；Web API 直接投影该字段。 |
+| `confidence` | Judge 对最终判断可靠性的估计，不是 Evidence 质量分，也不是 Report Module 字段。 |
+| `reasoning` | 可审计判断摘要，必须能通过 `referenced_agent_argument_ids` 和 Evidence References 回查。 |
+| `risk_notes` | Judge 形成的风险说明，不能写回 Evidence。 |
+| `suggested_next_checks` | 后续核对建议，不等同于自动 SearchTask；是否补齐由 Orchestrator 决定。 |
 
 ## 6. 事件
 

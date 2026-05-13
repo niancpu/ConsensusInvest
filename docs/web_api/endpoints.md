@@ -11,7 +11,7 @@
 5. [Entity API](./entities.md)：实体、实体关联 Evidence、实体关系。
 6. [API Appendix](./appendix.md)：Workflow Config、错误码、状态枚举、MVP 取舍与未决项。
 
-被融合模块的接口单独放在 [ZC Module API](../zc_module/endpoints.md)，包括 `stocks/*`、`market/*` 的视图接口，以及旧 `analysis/*`、`reports/*` 测试接口的删除规则。
+报告视图接口单独放在 [Report Module API](../report_module/endpoints.md)，包括 `stocks/*`、`market/*` 的视图接口，以及旧 `analysis/*`、`reports/*` 测试接口的删除规则。
 
 ## 核心边界
 
@@ -19,5 +19,5 @@
 - 实时运行过程统一走 `GET /api/v1/workflow-runs/{workflow_run_id}/events` SSE。
 - 最终判断必须能通过 `trace`、`references`、`evidence`、`raw-items` 回溯。
 - `docs/web_api` 只记录本项目和前端通信的核心协议，不承载被融合模块的完整接口清单。
-- `stocks/*`、`market/*` 的 ZC 适配规则放在 `docs/zc_module`。
+- `stocks/*`、`market/*` 的报告视图适配规则放在 `docs/report_module`。
 - 旧 `analysis/*`、`reports/*` 是被融合模块的测试接口，主协议不提供兼容别名。

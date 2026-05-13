@@ -22,9 +22,9 @@
 | --- | --- | --- |
 | `request_id` | 是 | 单次调用 ID，用于日志定位。 |
 | `correlation_id` | 是 | 一组跨模块调用的关联 ID，贯穿搜索、入库、推理、报告。 |
-| `workflow_run_id` | 否 | 主链路 workflow ID；ZC 单独触发补齐时可为空。 |
+| `workflow_run_id` | 否 | 主链路 workflow ID；Report Module 单独触发补齐时可为空。 |
 | `analysis_time` | 是 | 业务分析时间；回测和信息可用性判断必须使用它。 |
-| `requested_by` | 是 | 调用来源，如 `workflow_orchestrator`、`zc_module`、`evidence_maintenance`。 |
+| `requested_by` | 是 | 调用来源，如 `workflow_orchestrator`、`report_module`、`evidence_maintenance`。 |
 | `idempotency_key` | 视调用而定 | 创建类接口必须传；查询类接口可不传。 |
 | `trace_level` | 否 | `minimal`、`standard`、`debug`；控制事件和日志粒度。 |
 
@@ -93,7 +93,7 @@ cancelled
 
 ## 4. 内部事件
 
-内部事件用于模块间追踪和前端透明链路的上游材料。事件不是最终存储模型。
+内部事件用于模块间追踪和前端透明链路的上游材料。事件不是最终存储模型，也不直接等同于 Web SSE 事件；对前端暴露时由 Runtime Event Projector 转成 `docs/web_api/workflow.md` 定义的 snake_case 事件。
 
 ```json
 {
@@ -122,7 +122,28 @@ cancelled
 | `agent.argument_saved` | Agent Swarm | Agent 论点已保存。 |
 | `judge.tool_called` | Judge Runtime | Judge 回查了 Evidence/Raw。 |
 | `judge.completed` | Judge Runtime | 最终判断完成。 |
-| `report.refresh_requested` | Report/ZC Module | 页面聚合触发异步补齐。 |
+| `report.refresh_requested` | Report Module | 页面聚合触发异步补齐。 |
+
+内部事件到 Web SSE 的投影规则：
+
+| 内部事件 | Web SSE event_type | 说明 |
+| --- | --- | --- |
+| `search.task_queued` | `connector_started` 或 `refresh_task_queued` | 主 workflow 内搜索映射为 connector 事件；`report_generation` 补齐映射为 refresh 事件。 |
+| `search.item_found` | `raw_item_collected` | 仅表示发现原始项；最终可查询状态以 Raw/Evidence 资源为准。 |
+| `search.item_ingested` | `evidence_normalized` | Evidence Store 入库后才能对外暴露 Evidence ID。 |
+| `evidence.structure_saved` | `evidence_structured` | 结构化结果保存后投影。 |
+| `agent.argument_saved` | `agent_argument_completed` | Agent 论点持久化后投影；实时 delta 由运行时另行产生。 |
+| `round.summary_saved` | `round_summary_completed` | Round Summary 持久化后投影。 |
+| `judge.tool_called` | `judge_tool_call_completed` | 只暴露工具名、输入摘要、结果引用，不暴露模型私有思考。 |
+| `judge.completed` | `judgment_completed` | Judgment 持久化后投影。 |
+| `report.view_built` | `report_view_built` | 报告视图生成完成；不代表主 workflow 完成。 |
+| `report.refresh_requested` | `refresh_task_queued` | Report Module 已提交异步补齐任务。 |
+
+投影约束：
+
+- Web SSE 事件必须带 `correlation_id`；主 workflow 事件还必须带 `workflow_run_id`。
+- `workflow_run_id` 为空的 `report_generation` 或异步补齐事件不能挂到 `/workflow-runs/{workflow_run_id}/events` 下；应由报告视图查询或后续独立 report 事件入口消费。
+- 事件 payload 只承载增量提示和跳转 ID，不承载完整事实对象。
 
 ## 5. 通用错误码
 

@@ -1,16 +1,17 @@
 # Market API
 
-本文档定义 ZC 模块接入后的行情看板、市场股票列表、概念雷达和市场预警视图。
+本文档定义 Report Module 的行情看板、市场股票列表、概念雷达和市场预警视图。
 
-本节接口承接旧 `fontWebUI` 的 `market/*` 页面能力，但不让 ZC 模块自行接入外部行情源。行情数据来源应是主系统已有市场快照、Evidence、实体关系，或由 ZC 模块请求主系统已有 Search Agent / 数据刷新能力异步补齐。
+本节接口承接旧 `fontWebUI` 的 `market/*` 页面能力，但不让 Report Module 自行接入外部行情源。行情数据来源应是主系统已有市场快照、Evidence、实体关系，或由 Report Module 请求主系统已有 Search Agent / 数据刷新能力异步补齐。
 
 ## 1. 设计原则
 
 - `market/*` 是视图接口，不是事实生产接口。
-- ZC 模块不直接调用 AkShare、TuShare、新闻源或其他外部 provider。
+- Report Module 不直接调用 AkShare、TuShare、新闻源或其他外部 provider。
 - 当已有数据不足或过期时，后端可以异步指挥 Search Agent / 数据刷新服务补齐；当前 HTTP 请求不阻塞等待。
-- 新拿到的事实必须先进入主系统 Raw Item / Evidence / Market Snapshot，再由 ZC 模块读取。
-- 行情预警、概念热度、AI 情绪都不是投资建议；进入主分析任务后必须通过 workflow 形成可追踪链路。
+- 新拿到的事实必须先进入主系统 Raw Item / Evidence / Market Snapshot，再由 Report Module 读取。
+- 行情预警、概念热度、市场情绪都不是投资建议；进入主分析任务后必须通过 workflow 形成可追踪链路。
+- 本节接口返回的行情、热度、预警必须来自 `MarketSnapshot` 或 Evidence 引用，不能把页面计算结果回写成 Evidence。
 
 前端注解：
 
@@ -45,11 +46,11 @@ GET /api/v1/market/index-overview?refresh=stale
         "snapshot_id": "mkt_snap_20260513_000001_sh"
       }
     ],
-    "ai_sentiment": {
+    "market_sentiment": {
       "label": "中性偏多",
       "score": 62,
-      "source": "zc_market_sentiment_v1",
-      "evidence_ids": []
+      "source": "market_snapshot_projection",
+      "snapshot_ids": ["mkt_snap_20260513_index_sentiment"]
     },
     "data_state": "ready",
     "refresh_task_id": null,
@@ -68,11 +69,11 @@ GET /api/v1/market/index-overview?refresh=stale
 | `snapshot_id` | 主系统市场快照 ID，证明行情值来自已入库结果。 |
 | `data_state` | `ready`、`stale`、`partial`、`pending_refresh`。 |
 | `refresh_task_id` | 异步刷新任务 ID；只有后端触发刷新时返回。 |
-| `ai_sentiment` | ZC 视图层情绪聚合，不等于 Judge 结论。 |
+| `market_sentiment` | 基于 MarketSnapshot 的市场情绪视图，不等于 Judge 结论。 |
 
 前端注解：
 
-- 旧字段 `changeRate/aiSentiment/updatedAt` 在本项目中统一改为 snake_case。
+- 旧字段 `changeRate/aiSentiment/updatedAt` 在本项目中统一改为 snake_case；`aiSentiment` 对应 `market_sentiment`，不保留 AI 投资判断语义。
 - 如果复用旧前端组件，应在 API client 层做字段适配。
 
 ## 3. 查询市场股票列表
@@ -94,9 +95,8 @@ GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
         "price": 218.5,
         "change_rate": 2.15,
         "is_up": true,
-        "ai_score": 78,
-        "signal": "关注",
-        "signal_type": "watch",
+        "view_score": 78,
+        "view_label": "关注度较高",
         "entity_id": "ent_company_002594",
         "snapshot_id": "mkt_snap_20260513_002594"
       }
@@ -118,7 +118,7 @@ GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
 前端注解：
 
 - 该接口保留 `page/page_size`，因为行情表格更适合页码分页。
-- `ai_score` 和 `signal` 是 ZC 模块视图层评分，不是主链路投资建议。
+- `view_score` 和 `view_label` 是基于 MarketSnapshot 的页面排序/展示字段，不是主链路投资建议。
 - 点击“分析”时应跳转到创建或选择 `workflow_run` 的流程。
 
 ## 4. 查询概念雷达
@@ -137,7 +137,7 @@ GET /api/v1/market/concept-radar?limit=20&refresh=stale
       "entity_id": "ent_concept_low_altitude_economy",
       "status": "升温",
       "heat_score": 86,
-      "type": "positive",
+      "trend": "warming",
       "snapshot_ids": ["mkt_snap_20260513_concept_low_altitude"],
       "evidence_ids": []
     }
@@ -159,7 +159,7 @@ GET /api/v1/market/concept-radar?limit=20&refresh=stale
 ## 5. 查询市场预警
 
 ```http
-GET /api/v1/market/warnings?limit=10&level=positive&refresh=stale
+GET /api/v1/market/warnings?limit=10&severity=notice&refresh=stale
 ```
 
 响应：
@@ -172,7 +172,7 @@ GET /api/v1/market/warnings?limit=10&level=positive&refresh=stale
       "time": "09:45",
       "title": "异动预警",
       "content": "某板块出现放量上攻",
-      "level": "positive",
+      "severity": "notice",
       "related_stock_codes": ["002594.SZ"],
       "related_entity_ids": ["ent_concept_low_altitude_economy"],
       "snapshot_ids": ["mkt_snap_20260513_warn_001"],
@@ -189,7 +189,6 @@ GET /api/v1/market/warnings?limit=10&level=positive&refresh=stale
 
 前端注解：
 
-- 预警是实时市场提示，不自动成为 Judge 结论。
+- 预警是实时市场提示，不自动成为 Judge 结论；`severity` 只表达预警展示等级，不表达利多利空方向。
 - 用户从预警进入分析页时，前端应创建或选择 `workflow_run`。
-- 若预警需要作为分析证据，必须由主系统把相关原始信息转成 Raw Item / Evidence，ZC 模块不能直接把 warning 文本当成证据写入。
-
+- 若预警需要作为分析证据，必须由主系统把相关原始信息转成 Raw Item / Evidence，Report Module 不能直接把 warning 文本当成证据写入。

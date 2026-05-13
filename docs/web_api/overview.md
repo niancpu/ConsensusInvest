@@ -20,7 +20,7 @@
 
 - 前端不需要一次性接入所有接口，但不要把 API 理解成“只为某个页面服务”。
 - 推荐前端先接入 `workflow-runs`、`events`、`snapshot`、`trace`、`evidence`、`judgment`。
-- 被融合模块的 `stocks/*`、`market/*` 适配规则放在 `docs/zc_module`。
+- 被融合模块的 `stocks/*`、`market/*` 适配规则放在 `docs/report_module`。
 - `docs/web_api` 里的核心链路优先级高于被融合模块的聚合视图；透明推理链路仍以 `workflow-runs`、`trace`、`evidence`、`judgment` 为准。
 - 旧 `analysis/*`、`reports/*` 是被融合模块的测试 API，不在主协议中保留。
 
@@ -118,9 +118,12 @@ MVP 默认使用：
 | `stock_code` | 前端展示和路由使用的股票代码，建议带交易所后缀，例如 `002594.SZ` |
 | `ticker` | 系统内部分析使用的股票标识，架构文档示例为 `000001` |
 | `workflow_run_id` | 一次完整分析任务 |
+| `correlation_id` | 跨模块追踪 ID，可贯穿 workflow、报告生成和异步补齐 |
+| `report_run_id` | Report Module 的报告视图生成 ID，不等同于 `workflow_run_id` |
 | `raw_ref` | 原始数据记录 ID |
 | `evidence_id` | 归一化后的证据 ID |
 | `evidence_structure_id` | Evidence 的客观结构化结果 ID |
+| `market_snapshot_id` | 市场快照 ID，由 Evidence Store 管理，但不是 Evidence |
 | `agent_run_id` | 某个 Agent 的一次运行记录 |
 | `agent_argument_id` | 某个 Agent 在某一轮输出的论证片段 |
 | `round_summary_id` | 某一轮辩论摘要 |
@@ -132,6 +135,9 @@ MVP 默认使用：
 - 页面内跳转和下钻应优先使用这些 ID，不要依赖标题、股票名称或数组下标。
 - `raw_ref` 和 `evidence_id` 不是同一个概念。Raw Item 是原始输入，Evidence 是归一化后的证据。
 - `stock_code` 面向路由和展示，`ticker` 面向工作流和数据检索。后端必须接受常见 A 股代码格式并在响应中返回规范化结果。
+- `workflow_run_id` 只属于完整主分析链路；报告生成和异步补齐不能为了追踪方便伪造它。
+- `report_run_id` 只代表报告视图生成或缓存，不代表已运行 Agent Swarm / Judge。
+- `market_snapshot_id` 可以被报告视图和 workflow 引用，但不能自动等价为 Evidence 或 Judgment。
 
 ### 3.5 被融合模块边界
 
@@ -160,7 +166,7 @@ MVP 默认使用：
 
 - `docs/web_api` 中的新接口和核心接口统一使用本项目响应外壳；
 - `docs/web_api` 不为同一个业务接口维护两套响应 schema；
-- ZC 模块接口也应适配 `data/meta/error`，不把 `code/message/data` 扩散回主协议；
+- Report Module 接口也应适配 `data/meta/error`，不把 `code/message/data` 扩散回主协议；
 - 旧 `analysis/*`、`reports/*` 测试 API 直接裁切，不在主协议中做兼容别名；
 - 错误码统一走本文档第 17 节，不继续扩展旧模块的 `5010` 语义。
 
@@ -168,5 +174,5 @@ MVP 默认使用：
 
 - 新前端直接消费 `data/meta/error`。
 - 如果复用旧 `fontWebUI/src/api/http.js`，需要先改响应拦截逻辑。
-- 被融合模块的具体接口见 `docs/zc_module`；主协议只暴露 workflow、trace、evidence、agent、judgment、entity 等核心资源。
+- 被融合模块的具体接口见 `docs/report_module`；主协议只暴露 workflow、trace、evidence、agent、judgment、entity 等核心资源。
 

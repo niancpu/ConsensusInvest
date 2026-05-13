@@ -301,6 +301,8 @@ data: {"event_id":"evt_20260513_000001_000012","workflow_run_id":"wr_20260513_00
 
 ### 5.2 事件类型
 
+Workflow SSE 只覆盖有 `workflow_run_id` 的主分析链路事件。`report_generation` 报告生成和无 workflow 的异步补齐不能挂到本接口；这类状态通过报告视图响应中的 `data_state`、`refresh_task_id` 或后续独立 report 事件入口暴露。
+
 | event_type | 含义 |
 | --- | --- |
 | `workflow_queued` | 任务已进入队列 |
@@ -328,6 +330,26 @@ data: {"event_id":"evt_20260513_000001_000012","workflow_run_id":"wr_20260513_00
 
 - `agent_argument_delta` 和 `judgment_delta` 用于实时展示，但最终保存应以 `completed` 事件或详情接口返回为准。
 - `judge_tool_call_started/completed` 是透明链路的重要组成，不要只展示最终结论。
+
+### 5.2.1 内部事件映射
+
+后端内部事件使用 dotted style，例如 `agent.argument_saved`；Web SSE 使用 snake_case。公开 API 只承诺本节 `event_type`，不暴露内部事件名。
+
+| 内部事件 | Web SSE event_type |
+| --- | --- |
+| `search.task_queued` | `connector_started` |
+| `search.item_found` | `raw_item_collected` |
+| `search.item_ingested` | `evidence_normalized` |
+| `evidence.structure_saved` | `evidence_structured` |
+| `agent.argument_saved` | `agent_argument_completed` |
+| `round.summary_saved` | `round_summary_completed` |
+| `judge.tool_called` | `judge_tool_call_completed` |
+| `judge.completed` | `judgment_completed` |
+
+前端注解：
+
+- 映射事件只是运行过程提示，不替代资源详情接口。
+- 如果实现保留内部事件日志，前端仍只依赖 Web SSE 的 `event_type`。
 
 ### 5.3 Agent Argument Delta 示例
 

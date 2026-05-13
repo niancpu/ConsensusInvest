@@ -314,4 +314,16 @@ GET /api/v1/workflow-runs/{workflow_run_id}/evidence-references
 
 - 这个接口适合一次性构建 Evidence 引用关系图。
 - 它和实体关系图不是一回事。Evidence References 是一次 workflow 内的推理链路。
+- `source_type=report_view` 的引用只能使用 `reference_role=cited`，表示报告视图引用了该 Evidence，不表示支持、反驳或形成投资判断。
+
+
+## 12. MarketSnapshot 引用边界
+
+MarketSnapshot 由 Evidence Store 管理，但不是 Evidence。公开接口中出现 `market_snapshot_id` 时，只表示该视图引用了已入库市场快照。
+
+前端注解：
+
+- 行情价格、指数、概念热度、市场预警等视图应优先下钻到 `market_snapshot_id`。
+- `market_snapshot_id` 不能替代 `evidence_id`、`judgment_id` 或 `workflow_run_id`。
+- 如果某个市场快照需要进入正式投资判断，应创建或选择 workflow，让主链路基于可追踪输入生成 Judgment。
 

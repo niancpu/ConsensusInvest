@@ -1,6 +1,6 @@
 # Evidence Store 接口协议
 
-Evidence Store 对内提供两类接口能力：接收 Search Agent 的原始信息包并生成可引用对象；按 ID 或查询条件提供 Evidence、Raw、Structure 和引用关系。本文只定义模块接口契约，不定义表结构，也不表示 HTTP endpoint。
+Evidence Store 对内提供三类接口能力：接收 Search Agent 的原始信息包并生成可引用对象；按 ID 或查询条件提供 Evidence、Raw、Structure 和引用关系；写入和查询 MarketSnapshot。本文只定义模块接口契约，不定义表结构，也不表示 HTTP endpoint。
 
 ## 1. ingest_search_result
 
@@ -65,7 +65,7 @@ EvidenceStore.ingest_search_result(envelope: InternalCallEnvelope, package: Sear
   "ingest_context": {
     "task_id": "st_20260513_002594_0001",
     "workflow_run_id": null,
-    "requested_by": "zc_module"
+    "requested_by": "report_module"
   }
 }
 ```
@@ -216,5 +216,86 @@ agent_argument
 round_summary
 judgment
 judge_tool_call
-zc_view
+report_view
 ```
+
+引用角色约束：
+
+| source_type | 允许的 reference_role | 说明 |
+| --- | --- | --- |
+| `agent_argument` | `supports`、`counters`、`cited`、`refuted` | Agent 论证链路可以表达推理使用方式。 |
+| `round_summary` | `supports`、`counters`、`cited`、`refuted` | Round Summary 只能压缩已有论证和引用。 |
+| `judgment` | `supports`、`counters`、`cited`、`refuted` | Judge 最终判断可以记录证据使用角色。 |
+| `judge_tool_call` | `cited` | 工具回查只表示读取或核对，不表达方向性推理。 |
+| `report_view` | `cited` | 报告视图只能记录引用，不能用 `supports`、`counters`、`refuted` 表达推理关系。 |
+
+如果 `source_type=report_view` 但 `reference_role` 不是 `cited`，Evidence Store 必须拒绝并返回 `write_boundary_violation`。
+
+## 7. MarketSnapshot
+
+MarketSnapshot 是 Evidence Store 管理的独立事实类型，不是 `EvidenceItem`，不能承载投资建议、置信度评分、交易信号或建议动作。
+
+```json
+{
+  "market_snapshot_id": "mkt_snap_20260513_002594",
+  "snapshot_type": "stock_quote",
+  "ticker": "002594",
+  "entity_ids": ["ent_company_002594"],
+  "source": "akshare",
+  "snapshot_time": "2026-05-13T11:05:00+08:00",
+  "fetched_at": "2026-05-13T11:05:02+08:00",
+  "metrics": {
+    "price": 218.5,
+    "change_rate": 2.15,
+    "turnover_rate": 1.8,
+    "amount": 1234567890
+  },
+  "ingest_context": {
+    "task_id": "st_20260513_002594_market_0001",
+    "workflow_run_id": null,
+    "requested_by": "report_module"
+  }
+}
+```
+
+允许的 `snapshot_type`：
+
+```text
+stock_quote
+index_quote
+sector_heat
+concept_heat
+market_warning
+```
+
+约束：
+
+- `snapshot_time` 是行情业务时间，不能用 `fetched_at` 替代。
+- `metrics` 只能保存行情、热度、成交、换手、预警等级等客观市场状态。
+- 如果行情异动需要进入正式分析链路，应通过 `market_snapshot_id` 或后续 Evidence 引用进入 workflow，不由 Report Module 直接生成投资建议。
+
+## 8. MarketSnapshot 接口
+
+```text
+EvidenceStore.save_market_snapshot(envelope: InternalCallEnvelope, snapshot: MarketSnapshotDraft) -> MarketSnapshot
+EvidenceStore.query_market_snapshots(envelope: InternalCallEnvelope, query: MarketSnapshotQuery) -> MarketSnapshotPage
+EvidenceStore.get_market_snapshot(envelope: InternalCallEnvelope, market_snapshot_id: string) -> MarketSnapshot
+```
+
+`MarketSnapshotQuery`：
+
+```json
+{
+  "ticker": "002594",
+  "entity_ids": ["ent_company_002594"],
+  "snapshot_types": ["stock_quote", "market_warning"],
+  "snapshot_time_lte": "2026-05-13T10:00:00+08:00",
+  "limit": 50,
+  "offset": 0
+}
+```
+
+查询约束：
+
+- 回测或历史分析必须使用 `snapshot_time_lte <= envelope.analysis_time`。
+- 查询结果可以被 Report Module 作为视图材料，也可以被 workflow 作为可追踪输入，但不能自动等价为 Evidence。

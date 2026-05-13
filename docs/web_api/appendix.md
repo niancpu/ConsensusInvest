@@ -50,7 +50,10 @@ GET /api/v1/workflow-configs
 | `EVIDENCE_NOT_FOUND` | 404 | Evidence 不存在 |
 | `AGENT_ARGUMENT_NOT_FOUND` | 404 | Agent Argument 不存在 |
 | `JUDGMENT_NOT_FOUND` | 404 | Judgment 不存在 |
+| `REPORT_RUN_NOT_FOUND` | 404 | Report Module 视图运行不存在 |
+| `MARKET_SNAPSHOT_NOT_FOUND` | 404 | MarketSnapshot 不存在 |
 | `WORKFLOW_ALREADY_RUNNING` | 409 | 同一约束下已有运行中的任务 |
+| `BOUNDARY_VIOLATION` | 409 | 请求试图跨越模块边界，例如用 report view 写推理关系 |
 | `CONNECTOR_FAILED` | 502 | 外部信息源采集失败 |
 | `AGENT_FAILED` | 500 | Agent 执行失败 |
 | `JUDGE_FAILED` | 500 | Judge 执行失败 |
@@ -97,11 +100,32 @@ cited
 refuted
 ```
 
+### 18.4 Report Mode
+
+```text
+report_generation
+with_workflow_trace
+```
+
+### 18.5 Data State
+
+```text
+ready
+partial
+missing
+pending_refresh
+refreshing
+stale
+failed
+```
+
 前端注解：
 
 - `status` 是任务生命周期状态。
 - `stage` 是当前执行阶段。
 - `reference_role` 是引用关系，不是 Evidence 自身属性。
+- `report_generation` 不创建 `workflow_run_id`，也不产生 `judgment_id`。
+- `pending_refresh` / `refreshing` 只表示后端已提交异步补齐，不表示当前响应包含新数据。
 
 
 ## 19. MVP 取舍与未决项
@@ -116,8 +140,10 @@ refuted
 - 低质量 Evidence 不隐藏，只标记质量问题；
 - Agent 角色解释放在 `role_output`，不写入 Evidence。
 - 旧 `analysis/*`、`reports/*` 测试 API 不作为迁移期别名，直接裁切。
-- `stocks/*`、`market/*` 属于 ZC 模块视图接口，规则见 `docs/zc_module`；主协议不重复维护这些 endpoint。
-- ZC 模块可以消费主系统已有 Entity、Evidence、市场快照和 workflow 结果，但不能替代主 workflow。
+- `stocks/*`、`market/*` 属于 Report Module 视图接口，规则见 `docs/report_module`；主协议不重复维护这些 endpoint。
+- Report Module 可以消费主系统已有 Entity、Evidence、市场快照和 workflow 结果，但不能替代主 workflow。
+- Report Module 的 `report_generation` 模式必须返回 `report_run_id`，且 `workflow_run_id` / `judgment_id` 为空。
+- Report View 对 Evidence 的引用只能使用 `reference_role=cited`。
 
 ### 19.2 未决项
 

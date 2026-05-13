@@ -52,7 +52,7 @@ SearchAgentPool.submit(envelope: InternalCallEnvelope, request: SearchTask) -> A
 | `scope.max_results` | 本任务最多返回的原始信息项数量。 |
 | `constraints.allow_stale_cache` | 允许先返回缓存命中；入库仍需保留 `fetched_at`。 |
 | `callback.ingest_target` | 当前固定为 `evidence_store`。 |
-| `callback.workflow_run_id` | 可为空；主 workflow 触发搜索时填写，report-only 或预热补齐时为空。 |
+| `callback.workflow_run_id` | 可为空；主 workflow 触发搜索时填写，`report_generation` 或预热补齐时为空。 |
 
 返回：
 
@@ -159,7 +159,7 @@ EvidenceStore.ingest_search_result(envelope: InternalCallEnvelope, package: Sear
 ## 4. 约束
 
 - Search Agent 可以并发返回重复信息；去重由 Evidence Store 入库阶段处理。
-- `SearchResultPackage` 不能被 Agent Swarm、Judge 或 Report/ZC 直接引用。
+- `SearchResultPackage` 不能被 Agent Swarm、Judge 或 Report Module 直接引用。
 - `publish_time > envelope.analysis_time` 的 item 必须在入库阶段拒绝或标记为不适用于该 workflow。
 - 单个 source 失败不要求整个任务失败；状态可返回 `partial_completed`。
 - Search Agent 不输出投资判断、利多利空解释、买卖建议。

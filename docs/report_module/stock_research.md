@@ -1,22 +1,23 @@
 # Stock Research View API
 
-本文档定义 ZC 模块接入后的股票发现和个股研究聚合视图。
+本文档定义 Report Module 的股票发现和个股研究聚合视图。
 
-本节接口承接旧 `fontWebUI` 的 `stocks/*` 页面能力，但实现方式改为适配本项目主数据层：ZC 模块消费 Entity、Evidence Store、市场快照、主分析链路结果和模块内派生结果，不直接生产 Raw Item / Evidence。
+本节接口承接旧 `fontWebUI` 的 `stocks/*` 页面能力，但实现方式改为适配本项目主数据层：Report Module 消费 Entity、Evidence Store、MarketSnapshot 和主分析链路结果，不直接生产 Raw Item / Evidence。
 
 ## 1. 设计原则
 
 - `stocks/search` 是正式保留接口，但搜索结果应来自 Entity / Evidence Store / 股票索引，而不是旧项目自有状态。
 - `stocks/{stock_code}/analysis` 是个股研究聚合视图，不是新的 Agent 主流程入口。
-- ZC 模块可以有自己的模块内 Agent，用于摘要、排序、视图解释；它与主链路 Agent 解离，不写入主链路 `agent_arguments`、`judgments`。
-- 所有面向页面的解释性字段必须带可追踪引用，例如 `evidence_ids`、`entity_ids`、`workflow_run_id`、`judgment_id`、`zc_run_id`。
+- Report Module 可以有视图装配器或轻量格式化器，用于排序、摘录、模板填充和引用组织；不能生成投资解读、分析结论、方向性判断或操作建议。
+- 所有面向页面的字段必须带可追踪引用，例如 `evidence_ids`、`market_snapshot_ids`、`entity_ids`、`workflow_run_id`、`judgment_id`、`report_run_id`。
 - 数据不足时，接口返回当前可用结果和 `data_state`；是否触发搜索/刷新由后端根据策略异步提交给已有 Search Agent，接口不阻塞等待完整搜索。
 
 前端注解：
 
-- 本节接口适合旧首页、轻量研究卡片和 ZC 模块页面。
+- 本节接口适合旧首页、轻量研究卡片和报告视图页面。
 - 如果页面要展示完整透明推理链路，仍应接入 `docs/web_api` 中的 workflow、trace、evidence、judgment。
-- `summary`、`action`、`benefits`、`risks` 只是视图层字段，不等于主链路 Judge 的完整投资判断。
+- `summary`、`benefits`、`risks` 是已有 Evidence Structure、MarketSnapshot、Entity 或主链路 Judgment 的视图投影，不等于主链路 Judge 的完整投资判断。
+- `action` 只有在来源是主链路 Judgment 摘要时才允许返回；`report_generation` 轻量视图不得自行生成操作建议。
 
 ## 2. 搜索股票
 
@@ -73,7 +74,7 @@ GET /api/v1/stocks/search?keyword={keyword}&limit=10
 | 字段 | 说明 |
 | --- | --- |
 | `entity_id` | 主系统实体 ID，用于跳转实体详情、关系网络或创建 workflow。 |
-| `evidence_matches` | 从 Evidence Store 返回的相关证据摘要；这是搜索结果的一部分，不代表 ZC 模块生产了证据。 |
+| `evidence_matches` | 从 Evidence Store 返回的相关证据摘要；这是搜索结果的一部分，不代表 Report Module 生产了证据。 |
 | `match.type` | 命中来源，例如 `entity`、`evidence`、`entity_and_evidence`。 |
 | `data_state` | `ready` 表示已有数据足够；`partial` 表示只返回部分命中；`pending_refresh` 表示后端已异步触发搜索/刷新。 |
 
@@ -109,7 +110,8 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
     "entity_id": "ent_company_002594",
     "workflow_run_id": "wr_20260513_002594_000001",
     "judgment_id": "jdg_20260513_002594_001",
-    "zc_run_id": "zc_20260513_002594_0001",
+    "report_run_id": "rpt_20260513_002594_0001",
+    "report_mode": "with_workflow_trace",
     "data_state": "ready",
     "action": {
       "label": "观望",
@@ -119,7 +121,7 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
     },
     "report": {
       "title": "个股研究聚合视图",
-      "summary": "公司具备中期基本面支撑，但短期估值和现金流质量需要复核。",
+      "summary": "基于指定主 workflow 的 Judgment 和 Evidence Structure 生成的报告摘要。",
       "key_evidence": [
         {
           "evidence_id": "ev_20260513_002594_report_001",
@@ -133,9 +135,15 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
         {
           "text": "现金流质量下降",
           "evidence_ids": ["ev_20260513_002594_report_003"],
-          "source": "zc_module_summary"
+          "source": "main_judgment_summary"
         }
       ]
+    },
+    "trace_refs": {
+      "evidence_ids": ["ev_20260513_002594_report_001", "ev_20260513_002594_report_003"],
+      "market_snapshot_ids": ["mkt_snap_20260513_002594"],
+      "workflow_run_id": "wr_20260513_002594_000001",
+      "judgment_id": "jdg_20260513_002594_001"
     },
     "links": {
       "workflow_run": "/api/v1/workflow-runs/wr_20260513_002594_000001",
@@ -155,7 +163,8 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
 
 - 有 `workflow_run_id` 时，优先聚合该工作流的主链路结果。
 - 无 `workflow_run_id` 时，可读取该股票最新可用的主链路 Judgment、Evidence、Entity 信息。
-- 若主链路没有结果，接口仍可返回 Entity / Evidence / Market Snapshot 组成的轻量视图，但 `workflow_run_id` 和 `judgment_id` 为空。
+- 若主链路没有结果，接口仍可返回 Entity / Evidence / MarketSnapshot 组成的 `report_generation` 轻量视图，但 `workflow_run_id` 和 `judgment_id` 为空。
+- 当 `judgment_id` 为空时，`action` 和 `benefits` 必须为空；Report Module 只能返回客观摘要、事件列表、Evidence Structure 中已有的风险披露、MarketSnapshot 和限制说明。
 - 若 `refresh=missing` 或 `refresh=stale` 且数据不足，后端可以异步提交搜索/刷新请求，并返回 `data_state=pending_refresh` 和 `refresh_task_id`。
 - 该接口不启动 `workflow-runs`，也不生成主链路 Judgment。
 
@@ -163,7 +172,7 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
 
 - 页面可以用这个接口快速渲染旧项目首页结构。
 - 若要生成新的完整分析，前端应调用 `POST /api/v1/workflow-runs`。
-- `zc_run_id` 只代表 ZC 模块内视图生成或解释过程，不等于主链路 `workflow_run_id`。
+- `report_run_id` 代表 Report Module 视图生成或解释过程，不等于主链路 `workflow_run_id`。
 
 ## 4. 查询行业详情聚合视图
 
@@ -188,6 +197,7 @@ GET /api/v1/stocks/{stock_code}/industry-details?workflow_run_id={workflow_run_i
       "ev_20260513_002594_policy_001",
       "ev_20260513_002594_industry_002"
     ],
+    "market_snapshot_ids": [],
     "links": {
       "entity": "/api/v1/entities/ent_industry_new_energy_vehicle",
       "entity_relations": "/api/v1/entities/ent_industry_new_energy_vehicle/relations"
@@ -202,7 +212,7 @@ GET /api/v1/stocks/{stock_code}/industry-details?workflow_run_id={workflow_run_i
 
 前端注解：
 
-- 这些字段来自 Entity Relations、Evidence 和已有分析结果的聚合。
+- 这些字段来自 Entity Relations、Evidence Structure、MarketSnapshot 和已有分析结果的聚合。
 - 不能把 `policy_support_desc`、`competition_landscape` 写成不可追踪的静态文案。
 
 ## 5. 查询事件影响排名
@@ -218,7 +228,7 @@ GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_r
   "data": {
     "stock_code": "002594.SZ",
     "ticker": "002594",
-    "ranker": "zc_event_impact_ranker_v1",
+    "ranker": "report_event_impact_ranker_v1",
     "items": [
       {
         "event_name": "降息预期升温",
@@ -240,8 +250,8 @@ GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_r
 
 前端注解：
 
-- `impact_score` 是 ZC 模块排序分，不等于 Evidence 可信度，也不等于最终投资信号。
-- `direction` 是视图解释方向；若要展示主链路 Bull/Bear 论证，应跳转到 workflow trace。
+- `impact_score` 是 Report Module 基于已有引用做的排序分，不等于 Evidence 可信度，也不等于最终投资信号。
+- `direction` 只能在存在 `workflow_run_id` / `judgment_id` 或上游 Evidence Structure 已明确标注客观影响方向时返回；若要展示主链路 Bull/Bear 论证，应跳转到 workflow trace。
 
 ## 6. 查询利好与风险聚合视图
 
@@ -257,12 +267,12 @@ GET /api/v1/stocks/{stock_code}/benefits-risks?workflow_run_id={workflow_run_id}
     "stock_code": "002594.SZ",
     "ticker": "002594",
     "workflow_run_id": "wr_20260513_002594_000001",
-    "zc_run_id": "zc_20260513_002594_0001",
+    "report_run_id": "rpt_20260513_002594_0001",
     "benefits": [
       {
         "text": "订单能见度提升",
         "evidence_ids": ["ev_20260513_002594_order_001"],
-        "source": "zc_module_summary"
+        "source": "main_judgment_summary"
       }
     ],
     "risks": [
@@ -283,5 +293,5 @@ GET /api/v1/stocks/{stock_code}/benefits-risks?workflow_run_id={workflow_run_id}
 前端注解：
 
 - 旧项目返回字符串数组，本项目改为对象数组，是为了保留引用链路。
-- UI 可以只展示 `text`，但详情跳转必须使用 `evidence_ids`、`workflow_run_id` 或 `zc_run_id`。
-
+- UI 可以只展示 `text`，但详情跳转必须使用 `evidence_ids`、`workflow_run_id` 或 `report_run_id`。
+- 当没有 `judgment_id` 时，`benefits` 必须为空；`risks` 只能来自 Evidence Structure 中已有的客观风险披露或限制说明。
