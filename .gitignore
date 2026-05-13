@@ -9,4 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
-ARCHITECTURE.md
+/AGENTS.md
+/CLAUDE.md
+start claude.bat
+start cx.bat
