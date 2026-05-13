@@ -1,0 +1,939 @@
+"""Stdlib-only SQLite Evidence Store implementation."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from collections.abc import Mapping
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from consensusinvest.evidence_store.client import (
+    _ALLOWED_REFERENCE_ROLES,
+    _ALLOWED_SNAPSHOT_TYPES,
+    _as_float,
+    _as_int,
+    _clean_key_value,
+    _clean_sequence,
+    _coerce_dataclass,
+    _content_dedupe_key,
+    _datetime_after,
+    _datetime_gte,
+    _datetime_lte,
+    _evidence_sort_key,
+    _evidence_type,
+    _find_forbidden_key,
+    _freshness,
+    _ingest_context,
+    _intersects_if_requested,
+    _in_if_requested,
+    _item_dedupe_key,
+    _item_entity_ids,
+    _iter_package_items,
+    _market_snapshot_sort_key,
+    _matches_optional,
+    _matches_workflow_run_id,
+    _parse_datetime,
+    _rejected,
+    _source_quality_at_least,
+    _target_ticker,
+    _timestamp_for_create,
+    _to_mapping,
+    _value,
+)
+from consensusinvest.evidence_store.models import (
+    EvidenceDetail,
+    EvidenceItem,
+    EvidencePage,
+    EvidenceQuery,
+    EvidenceReference,
+    EvidenceReferenceBatch,
+    EvidenceReferenceQuery,
+    EvidenceReferenceResult,
+    EvidenceStructure,
+    EvidenceStructureDraft,
+    IngestRejectedItem,
+    IngestResult,
+    MarketSnapshot,
+    MarketSnapshotDraft,
+    MarketSnapshotPage,
+    MarketSnapshotQuery,
+    RawItem,
+)
+from consensusinvest.runtime import InternalCallEnvelope
+
+
+class SQLiteEvidenceStoreClient:
+    """SQLite-backed Evidence Store with the same core contract as the in-memory client."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = str(db_path)
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._ensure_schema()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def ingest_search_result(
+        self,
+        envelope: InternalCallEnvelope,
+        package: Any,
+    ) -> IngestResult:
+        envelope.validate_for_create()
+        accepted_raw_refs: list[str] = []
+        created_evidence_ids: list[str] = []
+        rejected_items: list[IngestRejectedItem] = []
+
+        for item in _iter_package_items(package):
+            data = _to_mapping(item)
+            external_id = _clean_key_value(data.get("external_id"))
+            violation_path = _find_forbidden_key(
+                data,
+                skip_keys={"raw_payload", "provider_response"},
+            )
+            if violation_path is not None:
+                rejected_items.append(
+                    _rejected(
+                        external_id,
+                        "write_boundary_violation",
+                        f"directional field is not allowed in Evidence: {violation_path}",
+                    )
+                )
+                continue
+
+            publish_time = _parse_datetime(
+                data.get("publish_time") or data.get("published_at")
+            )
+            if (data.get("publish_time") or data.get("published_at")) and publish_time is None:
+                rejected_items.append(
+                    _rejected(
+                        external_id,
+                        "invalid_request",
+                        "publish_time must be an ISO datetime when provided",
+                    )
+                )
+                continue
+            if _datetime_after(publish_time, envelope.analysis_time):
+                rejected_items.append(
+                    _rejected(
+                        external_id,
+                        "publish_time_after_analysis_time",
+                        "item publish_time is later than envelope.analysis_time",
+                    )
+                )
+                continue
+
+            primary_item_key = _item_dedupe_key(data, package)
+            if primary_item_key is None:
+                rejected_items.append(
+                    _rejected(
+                        external_id,
+                        "invalid_request",
+                        "search result item must include url or external_id",
+                    )
+                )
+                continue
+            item_keys = _dedupe_keys(data, package, primary_item_key)
+
+            duplicate_key = self._existing_dedupe_key(item_keys)
+            if duplicate_key is not None:
+                rejected_items.append(
+                    IngestRejectedItem(
+                        external_id=external_id,
+                        reason="duplicate_request",
+                        message="search result item was already ingested",
+                        item_key=duplicate_key,
+                        code="duplicate_request",
+                        retryable=True,
+                    )
+                )
+                continue
+
+            raw_item, evidence_item = self._build_raw_and_evidence(
+                envelope,
+                package,
+                data,
+                publish_time,
+            )
+            try:
+                with self._conn:
+                    self._insert_raw(raw_item)
+                    self._insert_evidence(evidence_item)
+                    for item_key in item_keys:
+                        self._insert_dedupe_key(
+                            item_key,
+                            raw_item.raw_ref,
+                            evidence_item.evidence_id,
+                        )
+            except sqlite3.IntegrityError:
+                rejected_items.append(
+                    IngestRejectedItem(
+                        external_id=external_id,
+                        reason="duplicate_request",
+                        message="search result item was already ingested",
+                        item_key=item_keys[0],
+                        code="duplicate_request",
+                        retryable=True,
+                    )
+                )
+                continue
+
+            accepted_raw_refs.append(raw_item.raw_ref)
+            created_evidence_ids.append(evidence_item.evidence_id)
+
+        if accepted_raw_refs and rejected_items:
+            status = "partial_accepted"
+        elif accepted_raw_refs:
+            status = "accepted"
+        else:
+            status = "rejected"
+
+        return IngestResult(
+            task_id=_clean_key_value(_value(package, "task_id")),
+            workflow_run_id=_clean_key_value(getattr(envelope, "workflow_run_id", None)),
+            status=status,
+            accepted_raw_refs=accepted_raw_refs,
+            created_evidence_ids=created_evidence_ids,
+            updated_evidence_ids=[],
+            rejected_items=rejected_items,
+        )
+
+    def query_evidence(
+        self,
+        envelope: InternalCallEnvelope,
+        query: EvidenceQuery | Mapping[str, Any],
+    ) -> EvidencePage:
+        del envelope
+        evidence_query = _coerce_dataclass(EvidenceQuery, query)
+        publish_lte = _parse_datetime(evidence_query.publish_time_lte)
+        publish_gte = _parse_datetime(evidence_query.publish_time_gte)
+        raw_items = self._load_raw_items_by_ref()
+
+        rows = [
+            item
+            for item in self._load_all_evidence()
+            if _matches_optional(item.ticker, evidence_query.ticker)
+            and _intersects_if_requested(item.entity_ids, evidence_query.entity_ids)
+            and _in_if_requested(item.evidence_type, evidence_query.evidence_types)
+            and _in_if_requested(item.source, evidence_query.sources)
+            and _in_if_requested(item.source_type, evidence_query.source_types)
+            and _source_quality_at_least(item.source_quality, evidence_query.source_quality_min)
+            and _datetime_lte(item.publish_time, publish_lte)
+            and _datetime_gte(item.publish_time, publish_gte)
+            and _matches_workflow_run_id(item, evidence_query.workflow_run_id, raw_items)
+        ]
+        rows.sort(key=_evidence_sort_key, reverse=True)
+        total = len(rows)
+        limit = max(evidence_query.limit, 0)
+        offset = max(evidence_query.offset, 0)
+        return EvidencePage(
+            items=rows[offset : offset + limit],
+            total=total,
+            limit=evidence_query.limit,
+            offset=evidence_query.offset,
+        )
+
+    def get_evidence(
+        self,
+        envelope: InternalCallEnvelope,
+        evidence_id: str,
+    ) -> EvidenceDetail:
+        del envelope
+        evidence = self._load_evidence(evidence_id)
+        if evidence is None:
+            raise KeyError(f"evidence_not_found: {evidence_id}")
+        structure = self._load_latest_structure(evidence_id)
+        references = self.query_references(
+            _dummy_envelope(),
+            EvidenceReferenceQuery(evidence_id=evidence_id),
+        )
+        return EvidenceDetail(
+            evidence=evidence,
+            structure=structure,
+            raw_ref=evidence.raw_ref,
+            references=references,
+        )
+
+    def get_raw(self, envelope: InternalCallEnvelope, raw_ref: str) -> RawItem:
+        del envelope
+        raw_item = self._load_raw(raw_ref)
+        if raw_item is None:
+            raise KeyError(f"raw_not_found: {raw_ref}")
+        return raw_item
+
+    def save_structure(
+        self,
+        envelope: InternalCallEnvelope,
+        draft: EvidenceStructureDraft | Mapping[str, Any],
+    ) -> EvidenceStructure:
+        envelope.validate_for_create()
+        violation_path = _find_forbidden_key(draft)
+        if violation_path is not None:
+            raise ValueError(
+                f"write_boundary_violation: directional field is not allowed in structure: {violation_path}"
+            )
+        structure_draft = _coerce_dataclass(EvidenceStructureDraft, draft)
+        if self._load_evidence(structure_draft.evidence_id) is None:
+            raise KeyError(f"evidence_not_found: {structure_draft.evidence_id}")
+
+        version = self._next_structure_version(structure_draft.evidence_id)
+        structure = EvidenceStructure(
+            structure_id=self._next_id("struct"),
+            evidence_id=structure_draft.evidence_id,
+            version=version,
+            objective_summary=structure_draft.objective_summary,
+            key_facts=list(structure_draft.key_facts),
+            claims=list(structure_draft.claims),
+            structuring_confidence=structure_draft.structuring_confidence,
+            quality_notes=tuple(structure_draft.quality_notes),
+            created_by_agent_id=structure_draft.created_by_agent_id,
+            created_at=_timestamp_for_create(envelope),
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO evidence_structures (
+                    structure_id, evidence_id, version, objective_summary,
+                    key_facts_json, claims_json, structuring_confidence,
+                    quality_notes_json, created_by_agent_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    structure.structure_id,
+                    structure.evidence_id,
+                    structure.version,
+                    structure.objective_summary,
+                    _json_dump(structure.key_facts),
+                    _json_dump(list(structure.claims)),
+                    structure.structuring_confidence,
+                    _json_dump(list(structure.quality_notes)),
+                    structure.created_by_agent_id,
+                    _dt_dump(structure.created_at),
+                ),
+            )
+        return structure
+
+    def save_references(
+        self,
+        envelope: InternalCallEnvelope,
+        batch: EvidenceReferenceBatch | Mapping[str, Any],
+    ) -> EvidenceReferenceResult:
+        envelope.validate_for_create()
+        reference_batch = _coerce_dataclass(EvidenceReferenceBatch, batch)
+        allowed_roles = _ALLOWED_REFERENCE_ROLES.get(reference_batch.source_type)
+        if allowed_roles is None:
+            raise ValueError(f"invalid_reference_source_type: {reference_batch.source_type}")
+
+        accepted: list[EvidenceReference] = []
+        rejected: list[IngestRejectedItem] = []
+        for index, ref_data in enumerate(reference_batch.references):
+            data = _to_mapping(ref_data)
+            evidence_id = _clean_key_value(data.get("evidence_id"))
+            role = _clean_key_value(data.get("reference_role"))
+            external_id = evidence_id or f"reference[{index}]"
+            if evidence_id is None or self._load_evidence(evidence_id) is None:
+                rejected.append(
+                    _rejected(external_id, "evidence_not_found", "referenced evidence_id does not exist")
+                )
+                continue
+            if role not in allowed_roles:
+                rejected.append(
+                    _rejected(
+                        external_id,
+                        "write_boundary_violation",
+                        f"{reference_batch.source_type} cannot use reference_role={role}",
+                    )
+                )
+                continue
+
+            reference = EvidenceReference(
+                reference_id=self._next_id("eref"),
+                source_type=reference_batch.source_type,
+                source_id=reference_batch.source_id,
+                evidence_id=evidence_id,
+                reference_role=role,
+                round=_as_int(data.get("round")),
+                workflow_run_id=envelope.workflow_run_id,
+                created_at=_timestamp_for_create(envelope),
+            )
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO evidence_references (
+                        reference_id, source_type, source_id, evidence_id,
+                        reference_role, round, workflow_run_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        reference.reference_id,
+                        reference.source_type,
+                        reference.source_id,
+                        reference.evidence_id,
+                        reference.reference_role,
+                        reference.round,
+                        reference.workflow_run_id,
+                        _dt_dump(reference.created_at),
+                    ),
+                )
+            accepted.append(reference)
+
+        return EvidenceReferenceResult(
+            source_type=reference_batch.source_type,
+            source_id=reference_batch.source_id,
+            accepted_references=accepted,
+            rejected_references=rejected,
+        )
+
+    def query_references(
+        self,
+        envelope: InternalCallEnvelope,
+        query: EvidenceReferenceQuery | Mapping[str, Any],
+    ) -> list[EvidenceReference]:
+        del envelope
+        reference_query = _coerce_dataclass(EvidenceReferenceQuery, query)
+        rows = [
+            _reference_from_row(row)
+            for row in self._conn.execute(
+                "SELECT * FROM evidence_references ORDER BY rowid ASC"
+            ).fetchall()
+        ]
+        rows = [
+            ref
+            for ref in rows
+            if _matches_optional(ref.evidence_id, reference_query.evidence_id)
+            and _matches_optional(ref.source_type, reference_query.source_type)
+            and _matches_optional(ref.source_id, reference_query.source_id)
+            and _matches_optional(ref.reference_role, reference_query.reference_role)
+            and _matches_optional(ref.workflow_run_id, reference_query.workflow_run_id)
+        ]
+        limit = max(reference_query.limit, 0)
+        offset = max(reference_query.offset, 0)
+        return rows[offset : offset + limit]
+
+    def save_market_snapshot(
+        self,
+        envelope: InternalCallEnvelope,
+        snapshot: MarketSnapshotDraft | Mapping[str, Any],
+    ) -> MarketSnapshot:
+        envelope.validate_for_create()
+        violation_path = _find_forbidden_key(snapshot)
+        if violation_path is not None:
+            raise ValueError(
+                f"write_boundary_violation: directional field is not allowed in MarketSnapshot: {violation_path}"
+            )
+        draft = _coerce_dataclass(MarketSnapshotDraft, snapshot)
+        if draft.snapshot_type not in _ALLOWED_SNAPSHOT_TYPES:
+            raise ValueError(f"invalid_snapshot_type: {draft.snapshot_type}")
+        snapshot_time = _parse_datetime(draft.snapshot_time)
+        if snapshot_time is None:
+            raise ValueError("snapshot_time is required")
+        fetched_at = _parse_datetime(draft.fetched_at) or _timestamp_for_create(envelope)
+
+        saved = MarketSnapshot(
+            market_snapshot_id=self._next_id("mkt_snap"),
+            snapshot_type=draft.snapshot_type,
+            ticker=_clean_key_value(draft.ticker),
+            entity_ids=tuple(_clean_sequence(draft.entity_ids)),
+            source=_clean_key_value(draft.source),
+            snapshot_time=snapshot_time,
+            fetched_at=fetched_at,
+            metrics=dict(draft.metrics),
+            ingest_context=_ingest_context(envelope, task_id=None),
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO market_snapshots (
+                    market_snapshot_id, snapshot_type, ticker, entity_ids_json,
+                    source, snapshot_time, fetched_at, metrics_json, ingest_context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    saved.market_snapshot_id,
+                    saved.snapshot_type,
+                    saved.ticker,
+                    _json_dump(list(saved.entity_ids)),
+                    saved.source,
+                    _dt_dump(saved.snapshot_time),
+                    _dt_dump(saved.fetched_at),
+                    _json_dump(saved.metrics),
+                    _json_dump(saved.ingest_context),
+                ),
+            )
+        return saved
+
+    def query_market_snapshots(
+        self,
+        envelope: InternalCallEnvelope,
+        query: MarketSnapshotQuery | Mapping[str, Any],
+    ) -> MarketSnapshotPage:
+        snapshot_query = _coerce_dataclass(MarketSnapshotQuery, query)
+        snapshot_lte = _parse_datetime(snapshot_query.snapshot_time_lte) or envelope.analysis_time
+        snapshot_gte = _parse_datetime(snapshot_query.snapshot_time_gte)
+        if snapshot_lte is not None and _datetime_after(snapshot_lte, envelope.analysis_time):
+            raise ValueError("snapshot_time_lte cannot be after envelope.analysis_time")
+
+        rows = [
+            item
+            for item in self._load_all_market_snapshots()
+            if _matches_optional(item.ticker, snapshot_query.ticker)
+            and _intersects_if_requested(item.entity_ids, snapshot_query.entity_ids)
+            and _in_if_requested(item.snapshot_type, snapshot_query.snapshot_types)
+            and _datetime_lte(item.snapshot_time, snapshot_lte)
+            and _datetime_gte(item.snapshot_time, snapshot_gte)
+        ]
+        rows.sort(key=_market_snapshot_sort_key, reverse=True)
+        total = len(rows)
+        limit = max(snapshot_query.limit, 0)
+        offset = max(snapshot_query.offset, 0)
+        return MarketSnapshotPage(
+            items=rows[offset : offset + limit],
+            total=total,
+            limit=snapshot_query.limit,
+            offset=snapshot_query.offset,
+        )
+
+    def get_market_snapshot(
+        self,
+        envelope: InternalCallEnvelope,
+        market_snapshot_id: str,
+    ) -> MarketSnapshot:
+        del envelope
+        row = self._conn.execute(
+            "SELECT * FROM market_snapshots WHERE market_snapshot_id = ?",
+            (market_snapshot_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"market_snapshot_not_found: {market_snapshot_id}")
+        return _market_snapshot_from_row(row)
+
+    def _ensure_schema(self) -> None:
+        with self._conn:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS raw_items (
+                    raw_ref TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    source_type TEXT,
+                    ticker TEXT,
+                    entity_ids_json TEXT NOT NULL,
+                    title TEXT,
+                    content TEXT,
+                    content_preview TEXT,
+                    url TEXT,
+                    publish_time TEXT,
+                    fetched_at TEXT,
+                    author TEXT,
+                    language TEXT,
+                    raw_payload_json TEXT NOT NULL,
+                    ingest_context_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS evidence_items (
+                    evidence_id TEXT PRIMARY KEY,
+                    raw_ref TEXT NOT NULL UNIQUE,
+                    ticker TEXT,
+                    entity_ids_json TEXT NOT NULL,
+                    source TEXT,
+                    source_type TEXT,
+                    evidence_type TEXT,
+                    title TEXT,
+                    content TEXT,
+                    url TEXT,
+                    publish_time TEXT,
+                    fetched_at TEXT,
+                    source_quality REAL,
+                    relevance REAL,
+                    freshness REAL,
+                    quality_notes_json TEXT NOT NULL,
+                    FOREIGN KEY(raw_ref) REFERENCES raw_items(raw_ref)
+                );
+
+                CREATE TABLE IF NOT EXISTS evidence_structures (
+                    structure_id TEXT PRIMARY KEY,
+                    evidence_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    objective_summary TEXT NOT NULL,
+                    key_facts_json TEXT NOT NULL,
+                    claims_json TEXT NOT NULL,
+                    structuring_confidence REAL,
+                    quality_notes_json TEXT NOT NULL,
+                    created_by_agent_id TEXT,
+                    created_at TEXT,
+                    UNIQUE(evidence_id, version),
+                    FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS evidence_references (
+                    reference_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    reference_role TEXT NOT NULL,
+                    round INTEGER,
+                    workflow_run_id TEXT,
+                    created_at TEXT,
+                    FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS market_snapshots (
+                    market_snapshot_id TEXT PRIMARY KEY,
+                    snapshot_type TEXT NOT NULL,
+                    ticker TEXT,
+                    entity_ids_json TEXT NOT NULL,
+                    source TEXT,
+                    snapshot_time TEXT,
+                    fetched_at TEXT,
+                    metrics_json TEXT NOT NULL,
+                    ingest_context_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS dedupe_keys (
+                    item_key TEXT PRIMARY KEY,
+                    raw_ref TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(raw_ref) REFERENCES raw_items(raw_ref),
+                    FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
+                );
+                """
+            )
+
+    def _build_raw_and_evidence(
+        self,
+        envelope: InternalCallEnvelope,
+        package: Any,
+        data: Mapping[str, Any],
+        publish_time: datetime | None,
+    ) -> tuple[RawItem, EvidenceItem]:
+        source = _clean_key_value(data.get("source")) or _clean_key_value(_value(package, "source")) or "unknown"
+        source_type = _clean_key_value(data.get("source_type")) or _clean_key_value(
+            _value(package, "source_type")
+        )
+        target = _value(package, "target")
+        ticker = _clean_key_value(data.get("ticker")) or _target_ticker(target)
+        entity_ids = _item_entity_ids(data, target)
+        fetched_at = (
+            _parse_datetime(data.get("fetched_at"))
+            or _parse_datetime(_value(package, "completed_at"))
+            or _timestamp_for_create(envelope)
+        )
+        raw_ref = self._next_id("raw")
+        evidence_id = self._next_id("ev")
+        raw_item = RawItem(
+            raw_ref=raw_ref,
+            source=source,
+            source_type=source_type,
+            ticker=ticker,
+            entity_ids=tuple(entity_ids),
+            title=_clean_key_value(data.get("title")),
+            content=_clean_key_value(data.get("content")),
+            content_preview=_clean_key_value(data.get("content_preview") or data.get("snippet")),
+            url=_clean_key_value(data.get("url")),
+            publish_time=publish_time,
+            fetched_at=fetched_at,
+            author=_clean_key_value(data.get("author")),
+            language=_clean_key_value(data.get("language")),
+            raw_payload=dict(data.get("raw_payload") or {}),
+            ingest_context=_ingest_context(
+                envelope,
+                task_id=_clean_key_value(_value(package, "task_id")),
+            ),
+        )
+        evidence_item = EvidenceItem(
+            evidence_id=evidence_id,
+            raw_ref=raw_ref,
+            ticker=ticker,
+            entity_ids=tuple(entity_ids),
+            source=source,
+            source_type=source_type,
+            evidence_type=_evidence_type(data, package, source_type),
+            title=raw_item.title,
+            content=raw_item.content or raw_item.content_preview or raw_item.title,
+            url=raw_item.url,
+            publish_time=publish_time,
+            fetched_at=fetched_at,
+            source_quality=_as_float(data.get("source_quality") or data.get("source_quality_hint")),
+            relevance=_as_float(data.get("relevance")),
+            freshness=_as_float(data.get("freshness"))
+            if data.get("freshness") is not None
+            else _freshness(publish_time, envelope.analysis_time),
+            quality_notes=tuple(_clean_sequence(data.get("quality_notes"))),
+        )
+        return raw_item, evidence_item
+
+    def _insert_raw(self, item: RawItem) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO raw_items (
+                raw_ref, source, source_type, ticker, entity_ids_json,
+                title, content, content_preview, url, publish_time, fetched_at,
+                author, language, raw_payload_json, ingest_context_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.raw_ref,
+                item.source,
+                item.source_type,
+                item.ticker,
+                _json_dump(list(item.entity_ids)),
+                item.title,
+                item.content,
+                item.content_preview,
+                item.url,
+                _dt_dump(item.publish_time),
+                _dt_dump(item.fetched_at),
+                item.author,
+                item.language,
+                _json_dump(item.raw_payload),
+                _json_dump(item.ingest_context),
+            ),
+        )
+
+    def _insert_evidence(self, item: EvidenceItem) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO evidence_items (
+                evidence_id, raw_ref, ticker, entity_ids_json, source, source_type,
+                evidence_type, title, content, url, publish_time, fetched_at,
+                source_quality, relevance, freshness, quality_notes_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.evidence_id,
+                item.raw_ref,
+                item.ticker,
+                _json_dump(list(item.entity_ids)),
+                item.source,
+                item.source_type,
+                item.evidence_type,
+                item.title,
+                item.content,
+                item.url,
+                _dt_dump(item.publish_time),
+                _dt_dump(item.fetched_at),
+                item.source_quality,
+                item.relevance,
+                item.freshness,
+                _json_dump(list(item.quality_notes)),
+            ),
+        )
+
+    def _insert_dedupe_key(self, item_key: str, raw_ref: str, evidence_id: str) -> None:
+        self._conn.execute(
+            "INSERT INTO dedupe_keys (item_key, raw_ref, evidence_id) VALUES (?, ?, ?)",
+            (item_key, raw_ref, evidence_id),
+        )
+
+    def _existing_dedupe_key(self, item_keys: list[str]) -> str | None:
+        for key in item_keys:
+            row = self._conn.execute(
+                "SELECT item_key FROM dedupe_keys WHERE item_key = ?",
+                (key,),
+            ).fetchone()
+            if row is not None:
+                return str(row["item_key"])
+        return None
+
+    def _next_id(self, prefix: str) -> str:
+        key = f"next_{prefix}_id"
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
+            current = int(row["value"]) if row is not None else 1
+            self._conn.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, current + 1),
+            )
+        return f"{prefix}_{current:06d}"
+
+    def _next_structure_version(self, evidence_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(version), 0) AS max_version FROM evidence_structures WHERE evidence_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        return int(row["max_version"]) + 1
+
+    def _load_raw(self, raw_ref: str) -> RawItem | None:
+        row = self._conn.execute(
+            "SELECT * FROM raw_items WHERE raw_ref = ?",
+            (raw_ref,),
+        ).fetchone()
+        return _raw_from_row(row) if row is not None else None
+
+    def _load_evidence(self, evidence_id: str) -> EvidenceItem | None:
+        row = self._conn.execute(
+            "SELECT * FROM evidence_items WHERE evidence_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        return _evidence_from_row(row) if row is not None else None
+
+    def _load_all_evidence(self) -> list[EvidenceItem]:
+        return [
+            _evidence_from_row(row)
+            for row in self._conn.execute("SELECT * FROM evidence_items").fetchall()
+        ]
+
+    def _load_raw_items_by_ref(self) -> dict[str, RawItem]:
+        return {
+            item.raw_ref: item
+            for item in (
+                _raw_from_row(row)
+                for row in self._conn.execute("SELECT * FROM raw_items").fetchall()
+            )
+        }
+
+    def _load_latest_structure(self, evidence_id: str) -> EvidenceStructure | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM evidence_structures
+            WHERE evidence_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (evidence_id,),
+        ).fetchone()
+        return _structure_from_row(row) if row is not None else None
+
+    def _load_all_market_snapshots(self) -> list[MarketSnapshot]:
+        return [
+            _market_snapshot_from_row(row)
+            for row in self._conn.execute("SELECT * FROM market_snapshots").fetchall()
+        ]
+
+
+def _json_dump(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _dedupe_keys(data: Mapping[str, Any], package: Any, primary_item_key: str) -> list[str]:
+    keys: list[str] = [primary_item_key]
+    source = _clean_key_value(data.get("source")) or _clean_key_value(_value(package, "source")) or "unknown"
+    external_id = _clean_key_value(data.get("external_id"))
+    if external_id is not None:
+        external_key = f"source:{source}:external_id:{external_id}"
+        if external_key not in keys:
+            keys.append(external_key)
+    content_key = _content_dedupe_key(data, package)
+    if content_key is not None and content_key not in keys:
+        keys.append(content_key)
+    return keys
+
+
+def _json_load(value: str | None, default: Any) -> Any:
+    if value is None:
+        return default
+    return json.loads(value)
+
+
+def _dt_dump(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _raw_from_row(row: sqlite3.Row) -> RawItem:
+    return RawItem(
+        raw_ref=row["raw_ref"],
+        source=row["source"],
+        source_type=row["source_type"],
+        ticker=row["ticker"],
+        entity_ids=tuple(_json_load(row["entity_ids_json"], [])),
+        title=row["title"],
+        content=row["content"],
+        content_preview=row["content_preview"],
+        url=row["url"],
+        publish_time=_parse_datetime(row["publish_time"]),
+        fetched_at=_parse_datetime(row["fetched_at"]),
+        author=row["author"],
+        language=row["language"],
+        raw_payload=dict(_json_load(row["raw_payload_json"], {})),
+        ingest_context=dict(_json_load(row["ingest_context_json"], {})),
+    )
+
+
+def _evidence_from_row(row: sqlite3.Row) -> EvidenceItem:
+    return EvidenceItem(
+        evidence_id=row["evidence_id"],
+        raw_ref=row["raw_ref"],
+        ticker=row["ticker"],
+        entity_ids=tuple(_json_load(row["entity_ids_json"], [])),
+        source=row["source"],
+        source_type=row["source_type"],
+        evidence_type=row["evidence_type"],
+        title=row["title"],
+        content=row["content"],
+        url=row["url"],
+        publish_time=_parse_datetime(row["publish_time"]),
+        fetched_at=_parse_datetime(row["fetched_at"]),
+        source_quality=row["source_quality"],
+        relevance=row["relevance"],
+        freshness=row["freshness"],
+        quality_notes=tuple(_json_load(row["quality_notes_json"], [])),
+    )
+
+
+def _structure_from_row(row: sqlite3.Row) -> EvidenceStructure:
+    return EvidenceStructure(
+        structure_id=row["structure_id"],
+        evidence_id=row["evidence_id"],
+        version=row["version"],
+        objective_summary=row["objective_summary"],
+        key_facts=list(_json_load(row["key_facts_json"], [])),
+        claims=list(_json_load(row["claims_json"], [])),
+        structuring_confidence=row["structuring_confidence"],
+        quality_notes=tuple(_json_load(row["quality_notes_json"], [])),
+        created_by_agent_id=row["created_by_agent_id"],
+        created_at=_parse_datetime(row["created_at"]),
+    )
+
+
+def _reference_from_row(row: sqlite3.Row) -> EvidenceReference:
+    return EvidenceReference(
+        reference_id=row["reference_id"],
+        source_type=row["source_type"],
+        source_id=row["source_id"],
+        evidence_id=row["evidence_id"],
+        reference_role=row["reference_role"],
+        round=row["round"],
+        workflow_run_id=row["workflow_run_id"],
+        created_at=_parse_datetime(row["created_at"]),
+    )
+
+
+def _market_snapshot_from_row(row: sqlite3.Row) -> MarketSnapshot:
+    return MarketSnapshot(
+        market_snapshot_id=row["market_snapshot_id"],
+        snapshot_type=row["snapshot_type"],
+        ticker=row["ticker"],
+        entity_ids=tuple(_json_load(row["entity_ids_json"], [])),
+        source=row["source"],
+        snapshot_time=_parse_datetime(row["snapshot_time"]),
+        fetched_at=_parse_datetime(row["fetched_at"]),
+        metrics=dict(_json_load(row["metrics_json"], {})),
+        ingest_context=dict(_json_load(row["ingest_context_json"], {})),
+    )
+
+
+def _dummy_envelope() -> InternalCallEnvelope:
+    return InternalCallEnvelope(
+        request_id="sqlite_internal",
+        correlation_id="sqlite_internal",
+        workflow_run_id=None,
+        analysis_time=datetime.min,
+        requested_by="sqlite_evidence_store",
+    )
+
+
+__all__ = ["SQLiteEvidenceStoreClient"]
