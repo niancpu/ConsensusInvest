@@ -33,11 +33,10 @@ ZC 模块不负责：
 | --- | --- |
 | `docs/web_api` | 前端与主系统通信协议，包含 workflow、SSE、trace、evidence、judgment。 |
 | `docs/zc_module` | ZC 模块接入后的视图 API、迁移规则、裁切边界。 |
-| `docs/api_docs` | 主程序模块之间的内部接口约定；当前不在本文档补内容。 |
+| `docs/internal_contracts` | 主程序模块之间的内部接口协议；当前不在本文档补内容。 |
 
 前端注解：
 
 - 需要透明推理链路时，使用 `docs/web_api` 的 `workflow-runs`、`events`、`snapshot`、`trace`、`evidence`、`judgment`。
 - 需要承接旧页面、行情页、轻量个股卡片时，使用本目录接口。
 - 本目录接口返回的 `summary`、`benefits`、`risks`、`event ranking` 都是视图层结果；点击下钻必须能回到 Evidence、Entity、Workflow 或主链路 Judgment。
-
