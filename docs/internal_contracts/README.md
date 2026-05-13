@@ -10,15 +10,15 @@
 
 - `docs/internal_contracts`：主程序内部模块间接口协议。
 - `docs/web_api`：后端和前端的 HTTP/SSE 协议。
-- `docs/zc_module`：Report/ZC 模块对外视图接口和兼容说明。
+- `docs/report_module`：Report Module 对外视图接口和兼容说明。
 
 ## 文件列表
 
 1. [common_protocol.md](./common_protocol.md)：通用调用信封、返回包装、异步任务、事件、错误对象、幂等规则。
 2. [search_agent.md](./search_agent.md)：Search Agent Pool 的任务提交、状态查询、结果包接口。
-3. [evidence_store.md](./evidence_store.md)：SearchResultPackage 入库、Evidence 查询、Raw 回查、引用写入接口。
+3. [evidence_store.md](./evidence_store.md)：SearchResultPackage 入库、Evidence 查询、Raw 回查、MarketSnapshot、引用写入接口。
 4. [agent_swarm.md](./agent_swarm.md)：Agent Swarm / Judge Runtime 的运行输入、论证输出、证据缺口返回接口。
-5. [report_module.md](./report_module.md)：Report/ZC 模块读取主数据、构建聚合视图、触发异步补齐的内部接口。
+5. [report_module.md](./report_module.md)：Report Module 读取主数据、构建聚合视图、触发异步补齐的内部接口。
 
 ## 接口表达约定
 
@@ -48,9 +48,11 @@ ModulePort.method(envelope: InternalCallEnvelope, request: RequestDto) -> Result
 | Agent Swarm | Evidence Store | `save_references(EvidenceReferenceBatch)` | 同步 | 保存 Agent 论点、Round Summary、Judgment 对 Evidence 的引用关系。 |
 | Workflow Orchestrator | Agent Swarm | `run(AgentSwarmInput)` | 异步或长任务 | 启动主链路 Agent 论证。 |
 | Workflow Orchestrator | Judge Runtime | `run(JudgeInput)` | 异步或长任务 | 生成最终判断并记录回查过程。 |
-| Report/ZC Module | Evidence Store | `query_evidence` / `get_evidence` / `get_raw` | 同步 | 构建页面聚合视图时读取已入库数据。 |
-| Report/ZC Module | Main Runtime Query | `get_workflow_trace(workflow_run_id)` | 同步 | 读取主链路 Trace、Agent Argument、Judgment。 |
-| Report/ZC Module | Search Agent Pool | `submit(SearchTask)` | 异步 | 数据缺失或过期时触发补齐，不阻塞当前页面响应。 |
+| Report Module | Evidence Store | `query_evidence` / `get_evidence` / `get_raw` | 同步 | 构建页面聚合视图时读取已入库数据。 |
+| Report Module | Evidence Store | `query_market_snapshots` / `get_market_snapshot` | 同步 | 构建行情、报告和市场视图时读取 MarketSnapshot。 |
+| Report Module | Evidence Store | `save_references(EvidenceReferenceBatch)` | 同步 | 持久化报告视图对 Evidence 的引用，`source_type` 使用 `report_view` 或等价视图来源。 |
+| Report Module | Main Runtime Query | `get_workflow_trace(workflow_run_id)` | 同步 | 读取主链路 Trace、Agent Argument、Judgment。 |
+| Report Module | Search Agent Pool | `submit(SearchTask)` | 异步 | 数据缺失或过期时触发补齐，不阻塞当前页面响应。 |
 
 ## 统一约定
 
@@ -58,7 +60,9 @@ ModulePort.method(envelope: InternalCallEnvelope, request: RequestDto) -> Result
 - 异步调用只返回任务接收结果，不等待全链路完成。
 - Search Agent 返回的是 `SearchResultPackage`，包含原信息、URL、发布时间、来源、正文/摘要、raw payload 等；它不是 Evidence。
 - Evidence Store 入库后才会产生 `raw_ref`、`evidence_id`、质量标记和引用关系。
-- Agent Swarm、Judge Runtime、Report/ZC 模块只能引用 `evidence_id` / `raw_ref`，不能直接引用 Search Agent 的未入库结果。
+- Agent Swarm、Judge Runtime、Report Module 只能引用 `evidence_id` / `raw_ref`，不能直接引用 Search Agent 的未入库结果。
+- Report Module 对 Evidence 的持久引用只能使用 `source_type=report_view`、`reference_role=cited`，不能表达 `supports`、`counters` 或 `refuted`。
+- MarketSnapshot 由 Evidence Store 管理为独立事实类型，不是 EvidenceItem，不承载投资建议。
 - 协议示例里的 ID 格式是约定样例，不要求实现完全照抄，但必须保持全局可追踪、可日志检索。
 
 ## 实现边界
