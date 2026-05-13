@@ -18,7 +18,8 @@
 2. [search_agent.md](./search_agent.md)：Search Agent Pool 的任务提交、状态查询、结果包接口。
 3. [evidence_store.md](./evidence_store.md)：SearchResultPackage 入库、Evidence 查询、Raw 回查、MarketSnapshot、引用写入接口。
 4. [agent_swarm.md](./agent_swarm.md)：Agent Swarm / Judge Runtime 的运行输入、论证输出、证据缺口返回接口。
-5. [report_module.md](./report_module.md)：Report Module 读取主数据、构建聚合视图、触发异步补齐的内部接口。
+5. [evidence_acquisition.md](./evidence_acquisition.md)：Orchestrator 内部补齐服务，把 EvidenceGap 转换为 SearchTask。
+6. [report_module.md](./report_module.md)：Report Module 读取主数据、构建聚合视图、触发异步补齐的内部接口。
 
 ## 接口表达约定
 
@@ -42,6 +43,8 @@ ModulePort.method(envelope: InternalCallEnvelope, request: RequestDto) -> Result
 | --- | --- | --- | --- | --- |
 | Workflow Orchestrator | Search Agent Pool | `submit(SearchTask)` | 异步 | 创建搜索/刷新任务，立即返回 `SearchTaskReceipt`。 |
 | Workflow Orchestrator | Search Agent Pool | `get_status(task_id)` | 同步 | 查询搜索任务状态和已入库数量。 |
+| Workflow Orchestrator | Evidence Acquisition Service | `request_gap_fill(EvidenceGapFillRequest)` | 异步 | 将 EvidenceGap / suggested_search 转换为 SearchTask，并提交 Search Agent Pool。 |
+| Workflow Orchestrator | Evidence Acquisition Service | `build_search_task(EvidenceGapFillRequest)` | 同步 | 仅生成受约束的 SearchTask 草案，用于测试或编排。 |
 | Search Agent Worker | Evidence Store | `ingest_search_result(SearchResultPackage)` | 同步提交，可批量 | 提交原始信息包；Store 返回 Raw/Evidence 写入结果。 |
 | Workflow Orchestrator | Evidence Store | `query_evidence(EvidenceQuery)` | 同步 | 选择主链路要消费的 Evidence。 |
 | Agent Swarm | Evidence Store | `get_evidence(evidence_id)` / `get_raw(raw_ref)` | 同步 | Agent/Judge 回查证据和原始材料。 |
@@ -61,6 +64,8 @@ ModulePort.method(envelope: InternalCallEnvelope, request: RequestDto) -> Result
 - Search Agent 返回的是 `SearchResultPackage`，包含原信息、URL、发布时间、来源、正文/摘要、raw payload 等；它不是 Evidence。
 - Evidence Store 入库后才会产生 `raw_ref`、`evidence_id`、质量标记和引用关系。
 - Agent Swarm、Judge Runtime、Report Module 只能引用 `evidence_id` / `raw_ref`，不能直接引用 Search Agent 的未入库结果。
+- Agent Swarm、Judge Runtime 不能直接调用 Search Agent；它们只能输出 `EvidenceGap` / `suggested_search`，由 Workflow Orchestrator 通过 Evidence Acquisition Service 决定是否补齐。
+- `suggested_search` 不是 `SearchTask`，不能覆盖 workflow 的 source 白名单、预算、回测约束或重试策略。
 - Report Module 对 Evidence 的持久引用只能使用 `source_type=report_view`、`reference_role=cited`，不能表达 `supports`、`counters` 或 `refuted`。
 - MarketSnapshot 由 Evidence Store 管理为独立事实类型，不是 EvidenceItem，不承载投资建议。
 - 协议示例里的 ID 格式是约定样例，不要求实现完全照抄，但必须保持全局可追踪、可日志检索。

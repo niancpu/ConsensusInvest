@@ -2,6 +2,8 @@
 
 Agent Swarm 是主 workflow 的推理模块。它消费 Evidence Store 中的 Evidence 和 Structure，生成可追踪论证。Judge Runtime 基于这些论证和 Evidence 生成最终判断。
 
+Agent 类任务共享 `AgentRuntime` 运行层，用于处理任务生命周期、状态、事件、预算、错误和 trace。`AgentRuntime` 不定义业务输入输出；Search Agent、Debate Agent、Judge Agent 不能因为共享运行层而共享事实生产权或搜索权限。
+
 ## 1. Agent 输入
 
 Agent 输入必须来自已入库对象：
@@ -35,8 +37,11 @@ Agent 输出包括：
 设计边界：
 
 - Agent Swarm 不直接调用 Search Agent。
-- Orchestrator 默认把 `EvidenceGap` 转换为 SearchTask 并触发补齐；只有 Research/Search Agent 明确无法补齐时，才进入信息不足报告。
+- Agent Swarm 可以附带 `suggested_search`，但它只是搜索建议，不是 `SearchTask`。
+- Orchestrator 通过 `EvidenceAcquisitionService` 把可执行的 `EvidenceGap` 转换为 SearchTask 并触发补齐；只有 Research/Search Agent 明确无法补齐时，才进入信息不足报告。
 - 这样可以避免推理 Agent 自行扩张数据边界。
+
+`suggested_search` 只能描述缺什么、建议查什么，不能指定 provider 私有调用参数、不能绕过 workflow 预算，也不能要求当前 Agent 同步等待搜索完成。
 
 ## 4. Debate Runtime
 
@@ -59,6 +64,8 @@ Judge 默认消费：
 - key Evidence；
 - Evidence Structure；
 - 必要时通过工具回查 Raw。
+
+Judge 可以输出后续核对建议或 EvidenceGap，但不能直接调用 Search Agent，也不能把未入库搜索结果纳入 Judgment。
 
 Judge 输出 `judgment`，并保存：
 

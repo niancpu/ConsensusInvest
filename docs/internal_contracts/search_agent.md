@@ -28,7 +28,21 @@ SearchAgentPool.submit(envelope: InternalCallEnvelope, request: SearchTask) -> A
   "constraints": {
     "allow_stale_cache": true,
     "dedupe_hint": true,
-    "language": "zh-CN"
+    "language": "zh-CN",
+    "expansion_policy": {
+      "allowed": true,
+      "max_depth": 1,
+      "allowed_actions": [
+        "fetch_original_url",
+        "follow_official_source",
+        "provider_pagination",
+        "same_event_cross_source"
+      ]
+    },
+    "budget": {
+      "max_provider_calls": 20,
+      "max_runtime_ms": 60000
+    }
   },
   "callback": {
     "ingest_target": "evidence_store",
@@ -51,6 +65,8 @@ SearchAgentPool.submit(envelope: InternalCallEnvelope, request: SearchTask) -> A
 | `scope.lookback_days` | 从 `envelope.analysis_time` 向前回看。 |
 | `scope.max_results` | 本任务最多返回的原始信息项数量。 |
 | `constraints.allow_stale_cache` | 允许先返回缓存命中；入库仍需保留 `fetched_at`。 |
+| `constraints.expansion_policy` | 可选。约束 Search Agent 在同一任务内能否继续抓原文、翻页、跟随官方来源或做同事件跨源核对。 |
+| `constraints.budget` | 可选。约束 provider 调用次数、运行时间等资源上限；Search Agent 不得越过预算自主扩展。 |
 | `callback.ingest_target` | 当前固定为 `evidence_store`。 |
 | `callback.workflow_run_id` | 可为空；主 workflow 触发搜索时填写，`report_generation` 或预热补齐时为空。 |
 
@@ -159,6 +175,9 @@ EvidenceStore.ingest_search_result(envelope: InternalCallEnvelope, package: Sear
 ## 4. 约束
 
 - Search Agent 可以并发返回重复信息；去重由 Evidence Store 入库阶段处理。
+- Search Agent 可以在同一 `SearchTask` 内做受约束的低判断区扩展，例如抓原文、翻页、跟随官方来源、同事件跨源核对。
+- Search Agent 不能基于搜索结果自主开启新的研究方向；新的研究方向必须由 Orchestrator 根据 `EvidenceGap` 或用户请求生成新的 `SearchTask`。
+- Search Agent 的自主扩展必须受 `scope`、`constraints.expansion_policy`、`constraints.budget` 和 `envelope.analysis_time` 约束。
 - `SearchResultPackage` 不能被 Agent Swarm、Judge 或 Report Module 直接引用。
 - `publish_time > envelope.analysis_time` 的 item 必须在入库阶段拒绝或标记为不适用于该 workflow。
 - 单个 source 失败不要求整个任务失败；状态可返回 `partial_completed`。

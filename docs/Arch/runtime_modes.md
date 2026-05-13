@@ -32,7 +32,7 @@ Create workflow_run
 边界：
 
 - 主 workflow 可以触发 Search Agent，但 Search Agent 结果必须先入 Evidence Store。
-- Evidence 不足时，Orchestrator 默认把 `EvidenceGap` 转换为 Research/Search 任务并重试补齐。
+- Evidence 不足时，Orchestrator 默认把 `EvidenceGap` 交给 `EvidenceAcquisitionService`，由它转换为 SearchTask 并重试补齐。
 - 重试仍无法补齐时，主 workflow 输出信息不足状态和缺口说明，不把缺证场景伪装成完整判断。
 
 ## 2. 报告生成
@@ -85,6 +85,20 @@ Submit SearchTask
   -> later query by workflow/report
 ```
 
+主 workflow 内由证据缺口触发补齐时，完整链路为：
+
+```text
+Agent Swarm / Judge finds EvidenceGap
+  -> Workflow Orchestrator
+  -> EvidenceAcquisitionService
+  -> SearchAgentPool.submit(SearchTask)
+  -> Search Agent Worker
+  -> SearchResultPackage
+  -> Evidence Store ingest
+  -> Orchestrator re-query Evidence
+  -> Agent Swarm / Judge continue
+```
+
 状态：
 
 - 可以有 `workflow_run_id`，也可以没有。
@@ -95,17 +109,19 @@ Submit SearchTask
 
 - 补齐是异步动作，调用方不能阻塞等待完整搜索结果。
 - Report Module 只保存 `refresh_task_id` 和 `data_state`。
-- Agent Swarm 只能返回 `EvidenceGap`，不能自己直接调用 provider。
+- Agent Swarm / Judge 只能返回 `EvidenceGap` 或 `suggested_search`，不能自己直接调用 provider，也不能直接调用 Search Agent。
+- `EvidenceAcquisitionService` 属于 Orchestrator 内部能力，只负责任务转换、预算和重试控制，不生产 Raw/Evidence。
 
 ## 4. Evidence 不足重试策略
 
 默认策略：
 
 1. Agent Swarm / Judge 发现 Evidence 不足时，返回 `EvidenceGap`。
-2. Orchestrator 将 `EvidenceGap` 转换为 Research/Search 任务。
-3. Search Agent 搜集后交由 Evidence Store 入库。
-4. Orchestrator 重新选择 Evidence 并继续分析。
-5. 若 Research/Search Agent 明确返回无法补齐，workflow 输出信息不足报告。
+2. Orchestrator 将 `EvidenceGap` 交给 `EvidenceAcquisitionService`。
+3. `EvidenceAcquisitionService` 按 workflow 预算、source 白名单、回测约束和重试次数生成 `SearchTask`。
+4. Search Agent 搜集后交由 Evidence Store 入库。
+5. Orchestrator 重新选择 Evidence 并继续分析。
+6. 若 Research/Search Agent 明确返回无法补齐，workflow 输出信息不足报告。
 
 第一版重试预算：
 

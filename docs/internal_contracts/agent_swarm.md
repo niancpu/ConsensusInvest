@@ -42,7 +42,8 @@ AgentSwarm.run(envelope: InternalCallEnvelope, input: AgentSwarmInput) -> AsyncT
 约束：
 
 - `evidence_ids` 为空或质量不足时，返回 `insufficient_evidence`，并给出 `EvidenceGap`。
-- Agent Swarm 不直接调用 Search Agent；补齐动作由 Workflow Orchestrator 决定。
+- Agent Swarm 不直接调用 Search Agent；补齐动作由 Workflow Orchestrator 通过 `EvidenceAcquisitionService` 决定。
+- Agent Swarm 可以返回 `suggested_search`，但它不是 `SearchTask`，不能要求当前 Agent 同步等待补齐完成。
 
 ## 2. AgentArgumentDraft
 
@@ -143,6 +144,13 @@ EvidenceStore.save_references(envelope, EvidenceReferenceBatch)
 | `description` | 给 Orchestrator/Judge/前端看的缺口说明。 |
 | `suggested_search` | 搜索建议，不是 SearchTask；是否执行由 Orchestrator 决定。 |
 
+`suggested_search` 约束：
+
+- 只能描述建议补齐的信息类型、关键词、实体和时间范围。
+- 不能指定 provider 私有参数、不能覆盖 workflow source 白名单、不能绕过预算。
+- 不能包含未入库搜索结果，也不能被 Agent Swarm / Judge 直接消费为 Evidence。
+- Orchestrator 可以丢弃、合并、降级或改写建议，再交给 `EvidenceAcquisitionService` 生成正式 `SearchTask`。
+
 ## 5. JudgeRuntime.run
 
 ```text
@@ -218,6 +226,8 @@ Judge 输出：
 | `reasoning` | 可审计判断摘要，必须能通过 `referenced_agent_argument_ids` 和 Evidence References 回查。 |
 | `risk_notes` | Judge 形成的风险说明，不能写回 Evidence。 |
 | `suggested_next_checks` | 后续核对建议，不等同于自动 SearchTask；是否补齐由 Orchestrator 决定。 |
+
+Judge 若发现关键 Evidence 不足，应输出 `suggested_next_checks` 或 EvidenceGap 等结构化建议。Judge 不得直接调用 Search Agent，也不得把未入库搜索结果写入 Judgment。
 
 ## 6. 事件
 
