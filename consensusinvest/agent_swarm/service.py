@@ -11,7 +11,7 @@ from consensusinvest.evidence_store import (
     EvidenceReferenceBatch,
     EvidenceStoreClient,
 )
-from consensusinvest.runtime import InternalCallEnvelope
+from consensusinvest.runtime import InternalCallEnvelope, RuntimeEvent
 
 from .models import (
     AgentArgumentDraft,
@@ -27,6 +27,7 @@ from .models import (
     JudgeToolCallRecord,
     JudgmentRecord,
     RoundSummaryDraft,
+    RoundSummaryRecord,
     SuggestedSearch,
 )
 from .config import (
@@ -51,11 +52,13 @@ class AgentSwarmRuntime:
         repository: InMemoryAgentSwarmRepository | None = None,
         workflow_configs: Mapping[str, DebateWorkflowConfig] | None = None,
         llm_provider: AgentLLMProvider | None = None,
+        runtime_event_repository: Any | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.repository = repository or InMemoryAgentSwarmRepository()
         self.workflow_configs = workflow_configs or DEFAULT_DEBATE_WORKFLOW_CONFIGS
         self.llm_provider = llm_provider
+        self.runtime_event_repository = runtime_event_repository
 
     def run(
         self,
@@ -71,13 +74,50 @@ class AgentSwarmRuntime:
             swarm_input.workflow_config_id,
             self.workflow_configs,
         )
+        _append_runtime_event(
+            self.runtime_event_repository,
+            envelope=envelope,
+            event_type="started",
+            occurred_at=accepted_at,
+            producer="agent_swarm",
+            payload={
+                "runtime": "agent_swarm",
+                "task_id": task_id,
+                "workflow_run_id": swarm_input.workflow_run_id,
+                "workflow_config_id": swarm_input.workflow_config_id,
+                "ticker": swarm_input.ticker,
+                "status": "running",
+                "evidence_count": len(swarm_input.evidence_selection.evidence_ids),
+                "agent_count": len(workflow_config.agents),
+                "debate_rounds": workflow_config.debate_rounds,
+                "previous_judgment_count": len(swarm_input.history.previous_judgment_ids),
+            },
+        )
 
         if not swarm_input.evidence_selection.evidence_ids:
+            gaps = (_default_gap(swarm_input),)
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="failed",
+                occurred_at=accepted_at,
+                producer="agent_swarm",
+                payload={
+                    "runtime": "agent_swarm",
+                    "task_id": task_id,
+                    "workflow_run_id": swarm_input.workflow_run_id,
+                    "status": "insufficient_evidence",
+                    "error_code": "insufficient_evidence",
+                    "gap_types": _gap_types(gaps),
+                    "gap_count": len(gaps),
+                    "evidence_count": 0,
+                },
+            )
             return AgentSwarmRunOutcome(
                 task_id=task_id,
                 status="insufficient_evidence",
                 accepted_at=accepted_at,
-                gaps=(_default_gap(swarm_input),),
+                gaps=gaps,
             )
 
         details = []
@@ -89,29 +129,63 @@ class AgentSwarmRuntime:
                 missing_ids.append(evidence_id)
 
         if missing_ids:
+            gaps = (
+                EvidenceGap(
+                    gap_type="missing_evidence_ids",
+                    description=f"Evidence Store 中缺少请求的 Evidence: {', '.join(missing_ids)}。",
+                    suggested_search=_suggested_search(swarm_input),
+                ),
+            )
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="failed",
+                occurred_at=accepted_at,
+                producer="agent_swarm",
+                payload={
+                    "runtime": "agent_swarm",
+                    "task_id": task_id,
+                    "workflow_run_id": swarm_input.workflow_run_id,
+                    "status": "insufficient_evidence",
+                    "error_code": "insufficient_evidence",
+                    "gap_types": _gap_types(gaps),
+                    "gap_count": len(gaps),
+                    "missing_evidence_ids": list(missing_ids),
+                },
+            )
             return AgentSwarmRunOutcome(
                 task_id=task_id,
                 status="insufficient_evidence",
                 accepted_at=accepted_at,
-                gaps=(
-                    EvidenceGap(
-                        gap_type="missing_evidence_ids",
-                        description=f"Evidence Store 中缺少请求的 Evidence: {', '.join(missing_ids)}。",
-                        suggested_search=_suggested_search(swarm_input),
-                    ),
-                ),
+                gaps=gaps,
             )
 
         round_numbers = tuple(range(1, workflow_config.debate_rounds + 1))
-        agent_runs = {
-            agent.agent_id: self.repository.start_agent_run(
+        agent_runs = {}
+        for agent in workflow_config.agents:
+            agent_run = self.repository.start_agent_run(
                 workflow_run_id=swarm_input.workflow_run_id,
                 agent_id=agent.agent_id,
                 role=agent.role,
                 started_at=accepted_at,
             )
-            for agent in workflow_config.agents
-        }
+            agent_runs[agent.agent_id] = agent_run
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="started",
+                occurred_at=accepted_at,
+                producer="agent_swarm",
+                payload={
+                    "runtime": "agent_swarm",
+                    "task_id": task_id,
+                    "workflow_run_id": swarm_input.workflow_run_id,
+                    "agent_run_id": agent_run.agent_run_id,
+                    "agent_id": agent.agent_id,
+                    "role": agent.role,
+                    "status": agent_run.status,
+                },
+            )
         saved_argument_ids: list[str] = []
         saved_summary_ids: list[str] = []
 
@@ -149,6 +223,27 @@ class AgentSwarmRuntime:
                 )
                 round_arguments.append(argument)
                 saved_argument_ids.append(argument.agent_argument_id)
+                _append_runtime_event(
+                    self.runtime_event_repository,
+                    envelope=envelope,
+                    event_type="status_changed",
+                    occurred_at=accepted_at,
+                    producer="agent_swarm",
+                    payload={
+                        "runtime": "agent_swarm",
+                        "task_id": task_id,
+                        "workflow_run_id": swarm_input.workflow_run_id,
+                        "agent_run_id": argument.agent_run_id,
+                        "agent_id": argument.agent_id,
+                        "status": "running",
+                        "round": argument.round,
+                        "agent_argument_id": argument.agent_argument_id,
+                        "referenced_evidence_ids": list(argument.referenced_evidence_ids),
+                        "counter_evidence_ids": list(argument.counter_evidence_ids),
+                        "referenced_evidence_count": len(argument.referenced_evidence_ids),
+                        "counter_evidence_count": len(argument.counter_evidence_ids),
+                    },
+                )
                 saved_argument_refs = self.evidence_store.save_references(
                     envelope,
                     EvidenceReferenceBatch(
@@ -175,6 +270,24 @@ class AgentSwarmRuntime:
                 created_at=accepted_at,
             )
             saved_summary_ids.append(summary.round_summary_id)
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="status_changed",
+                occurred_at=accepted_at,
+                producer="agent_swarm",
+                payload={
+                    "runtime": "agent_swarm",
+                    "task_id": task_id,
+                    "workflow_run_id": swarm_input.workflow_run_id,
+                    "status": "running",
+                    "round": summary.round,
+                    "round_summary_id": summary.round_summary_id,
+                    "agent_argument_ids": list(summary.agent_argument_ids),
+                    "referenced_evidence_ids": list(summary.referenced_evidence_ids),
+                    "disputed_evidence_ids": list(summary.disputed_evidence_ids),
+                },
+            )
             saved_summary_refs = self.evidence_store.save_references(
                 envelope,
                 EvidenceReferenceBatch(
@@ -190,12 +303,46 @@ class AgentSwarmRuntime:
             self.repository.save_references(saved_summary_refs.accepted_references)
 
         for agent_run in agent_runs.values():
-            self.repository.complete_agent_run(
+            completed_agent_run = self.repository.complete_agent_run(
                 agent_run.agent_run_id,
                 completed_at=accepted_at,
                 rounds=round_numbers,
             )
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="completed",
+                occurred_at=accepted_at,
+                producer="agent_swarm",
+                payload={
+                    "runtime": "agent_swarm",
+                    "task_id": task_id,
+                    "workflow_run_id": swarm_input.workflow_run_id,
+                    "agent_run_id": completed_agent_run.agent_run_id,
+                    "agent_id": completed_agent_run.agent_id,
+                    "status": completed_agent_run.status,
+                    "rounds": list(completed_agent_run.rounds),
+                },
+            )
 
+        _append_runtime_event(
+            self.runtime_event_repository,
+            envelope=envelope,
+            event_type="completed",
+            occurred_at=accepted_at,
+            producer="agent_swarm",
+            payload={
+                "runtime": "agent_swarm",
+                "task_id": task_id,
+                "workflow_run_id": swarm_input.workflow_run_id,
+                "status": "completed",
+                "agent_run_ids": [run.agent_run_id for run in agent_runs.values()],
+                "agent_argument_ids": list(saved_argument_ids),
+                "round_summary_ids": list(saved_summary_ids),
+                "agent_argument_count": len(saved_argument_ids),
+                "round_summary_count": len(saved_summary_ids),
+            },
+        )
         return AgentSwarmRunOutcome(
             task_id=task_id,
             status="completed",
@@ -487,12 +634,14 @@ def _build_judgment_record(
     llm_provider: AgentLLMProvider | None,
     judge_input: JudgeInput,
     arguments: list[AgentArgumentRecord],
+    summaries: list[RoundSummaryRecord],
     details: list[Any],
     created_at: datetime,
 ) -> JudgmentRecord:
     positive_ids = tuple(detail.evidence.evidence_id for detail in details[:1])
     negative_ids = tuple(detail.evidence.evidence_id for detail in details[1:2])
     argument_ids = tuple(argument.agent_argument_id for argument in arguments)
+    summary_limitations = _summary_limitations(summaries, argument_ids)
     if llm_provider is None:
         final_signal = "neutral" if negative_ids else "bullish"
         return JudgmentRecord(
@@ -503,15 +652,22 @@ def _build_judgment_record(
             time_horizon="short_to_mid_term",
             key_positive_evidence_ids=positive_ids,
             key_negative_evidence_ids=negative_ids,
-            reasoning="基于已保存 Agent Argument 和 key Evidence，基本面支持 thesis 仍需与风险项共同评估。",
+            reasoning=(
+                "基于已保存 Round Summary、Agent Argument 和 key Evidence，"
+                "基本面支持 thesis 仍需与风险项共同评估。"
+            ),
             risk_notes=("反向 Evidence 或缺口会压低最终信号置信度。",) if negative_ids else (),
             suggested_next_checks=("补充最新同业横向估值对比",),
             referenced_agent_argument_ids=argument_ids,
-            limitations=("Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",),
+            limitations=(
+                "Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",
+                *summary_limitations,
+            ),
             created_at=created_at,
         )
 
     allowed_evidence_ids = tuple(detail.evidence.evidence_id for detail in details)
+    summary_ids = tuple(summary.round_summary_id for summary in summaries)
     raw = llm_provider.complete_json(
         purpose="judge",
         system_prompt=_JUDGE_SYSTEM_PROMPT,
@@ -530,8 +686,21 @@ def _build_judgment_record(
                 "limitations": ["string"],
             },
             "workflow_run_id": judge_input.workflow_run_id,
+            "round_summary_ids": list(summary_ids),
             "allowed_evidence_ids": list(allowed_evidence_ids),
             "allowed_agent_argument_ids": list(argument_ids),
+            "round_summaries": [
+                {
+                    "round_summary_id": summary.round_summary_id,
+                    "round": summary.round,
+                    "summary": summary.summary,
+                    "participants": list(summary.participants),
+                    "agent_argument_ids": list(summary.agent_argument_ids),
+                    "referenced_evidence_ids": list(summary.referenced_evidence_ids),
+                    "disputed_evidence_ids": list(summary.disputed_evidence_ids),
+                }
+                for summary in summaries
+            ],
             "arguments": [
                 {
                     "agent_argument_id": argument.agent_argument_id,
@@ -569,7 +738,10 @@ def _build_judgment_record(
         suggested_next_checks=tuple(_clean_sequence(raw.get("suggested_next_checks"))),
         referenced_agent_argument_ids=llm_argument_ids or argument_ids,
         limitations=tuple(_clean_sequence(raw.get("limitations")))
-        or ("Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",),
+        or (
+            "Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",
+            *summary_limitations,
+        ),
         created_at=created_at,
     )
 
@@ -583,10 +755,12 @@ class JudgeRuntime:
         evidence_store: EvidenceStoreClient,
         repository: InMemoryAgentSwarmRepository,
         llm_provider: AgentLLMProvider | None = None,
+        runtime_event_repository: Any | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.repository = repository
         self.llm_provider = llm_provider
+        self.runtime_event_repository = runtime_event_repository
 
     def run(
         self,
@@ -598,17 +772,100 @@ class JudgeRuntime:
         _validate_workflow_scope(envelope, judge_input.workflow_run_id)
         accepted_at = _timestamp(envelope)
         task_id = f"judge_{accepted_at.strftime('%Y%m%d_%H%M%S')}"
-        if not judge_input.agent_argument_ids or not judge_input.key_evidence_ids:
+        _append_runtime_event(
+            self.runtime_event_repository,
+            envelope=envelope,
+            event_type="started",
+            occurred_at=accepted_at,
+            producer="judge_runtime",
+            payload={
+                "runtime": "judge",
+                "task_id": task_id,
+                "workflow_run_id": judge_input.workflow_run_id,
+                "status": "running",
+                "round_summary_count": len(judge_input.round_summary_ids),
+                "agent_argument_count": len(judge_input.agent_argument_ids),
+                "key_evidence_count": len(judge_input.key_evidence_ids),
+                "enabled_tools": _enabled_judge_tools(judge_input.tool_access),
+            },
+        )
+        if (
+            not judge_input.round_summary_ids
+            or not judge_input.agent_argument_ids
+            or not judge_input.key_evidence_ids
+        ):
+            gaps = (
+                EvidenceGap(
+                    gap_type="missing_judge_inputs",
+                    description="Judge 缺少 Round Summary、Agent Argument 或 key Evidence，不能形成完整判断。",
+                ),
+            )
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="failed",
+                occurred_at=accepted_at,
+                producer="judge_runtime",
+                payload={
+                    "runtime": "judge",
+                    "task_id": task_id,
+                    "workflow_run_id": judge_input.workflow_run_id,
+                    "status": "insufficient_evidence",
+                    "error_code": "insufficient_evidence",
+                    "gap_types": _gap_types(gaps),
+                    "gap_count": len(gaps),
+                    "round_summary_count": len(judge_input.round_summary_ids),
+                    "agent_argument_count": len(judge_input.agent_argument_ids),
+                    "key_evidence_count": len(judge_input.key_evidence_ids),
+                },
+            )
             return JudgeRunOutcome(
                 task_id=task_id,
                 status="insufficient_evidence",
                 accepted_at=accepted_at,
-                gaps=(
-                    EvidenceGap(
-                        gap_type="missing_judge_inputs",
-                        description="Judge 缺少 Agent Argument 或 key Evidence，不能形成完整判断。",
+                gaps=gaps,
+            )
+
+        summaries: list[RoundSummaryRecord] = []
+        missing_summary_ids: list[str] = []
+        for round_summary_id in judge_input.round_summary_ids:
+            summary = self.repository.get_round_summary(round_summary_id)
+            if summary is None:
+                missing_summary_ids.append(round_summary_id)
+                continue
+            summaries.append(summary)
+        if missing_summary_ids:
+            gaps = (
+                EvidenceGap(
+                    gap_type="missing_round_summaries",
+                    description=(
+                        "Judge 请求的 Round Summary 尚未保存："
+                        f"{', '.join(missing_summary_ids)}。"
                     ),
                 ),
+            )
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="failed",
+                occurred_at=accepted_at,
+                producer="judge_runtime",
+                payload={
+                    "runtime": "judge",
+                    "task_id": task_id,
+                    "workflow_run_id": judge_input.workflow_run_id,
+                    "status": "insufficient_evidence",
+                    "error_code": "insufficient_evidence",
+                    "gap_types": _gap_types(gaps),
+                    "gap_count": len(gaps),
+                    "missing_round_summary_ids": list(missing_summary_ids),
+                },
+            )
+            return JudgeRunOutcome(
+                task_id=task_id,
+                status="insufficient_evidence",
+                accepted_at=accepted_at,
+                gaps=gaps,
             )
 
         arguments = [
@@ -617,16 +874,34 @@ class JudgeRuntime:
         ]
         arguments = [argument for argument in arguments if argument is not None]
         if not arguments:
+            gaps = (
+                EvidenceGap(
+                    gap_type="missing_agent_arguments",
+                    description="Judge 请求的 Agent Argument 尚未保存。",
+                ),
+            )
+            _append_runtime_event(
+                self.runtime_event_repository,
+                envelope=envelope,
+                event_type="failed",
+                occurred_at=accepted_at,
+                producer="judge_runtime",
+                payload={
+                    "runtime": "judge",
+                    "task_id": task_id,
+                    "workflow_run_id": judge_input.workflow_run_id,
+                    "status": "insufficient_evidence",
+                    "error_code": "insufficient_evidence",
+                    "gap_types": _gap_types(gaps),
+                    "gap_count": len(gaps),
+                    "requested_agent_argument_ids": list(judge_input.agent_argument_ids),
+                },
+            )
             return JudgeRunOutcome(
                 task_id=task_id,
                 status="insufficient_evidence",
                 accepted_at=accepted_at,
-                gaps=(
-                    EvidenceGap(
-                        gap_type="missing_agent_arguments",
-                        description="Judge 请求的 Agent Argument 尚未保存。",
-                    ),
-                ),
+                gaps=gaps,
             )
 
         details = []
@@ -634,16 +909,34 @@ class JudgeRuntime:
             try:
                 details.append(self.evidence_store.get_evidence(envelope, evidence_id))
             except KeyError:
+                gaps = (
+                    EvidenceGap(
+                        gap_type="missing_evidence_ids",
+                        description=f"Judge 请求的 Evidence 不存在：{evidence_id}。",
+                    ),
+                )
+                _append_runtime_event(
+                    self.runtime_event_repository,
+                    envelope=envelope,
+                    event_type="failed",
+                    occurred_at=accepted_at,
+                    producer="judge_runtime",
+                    payload={
+                        "runtime": "judge",
+                        "task_id": task_id,
+                        "workflow_run_id": judge_input.workflow_run_id,
+                        "status": "insufficient_evidence",
+                        "error_code": "insufficient_evidence",
+                        "gap_types": _gap_types(gaps),
+                        "gap_count": len(gaps),
+                        "missing_evidence_ids": [evidence_id],
+                    },
+                )
                 return JudgeRunOutcome(
                     task_id=task_id,
                     status="insufficient_evidence",
                     accepted_at=accepted_at,
-                    gaps=(
-                        EvidenceGap(
-                            gap_type="missing_evidence_ids",
-                            description=f"Judge 请求的 Evidence 不存在：{evidence_id}。",
-                        ),
-                    ),
+                    gaps=gaps,
                 )
 
         judgment = _build_judgment_record(
@@ -651,6 +944,7 @@ class JudgeRuntime:
             llm_provider=self.llm_provider,
             judge_input=judge_input,
             arguments=arguments,
+            summaries=summaries,
             details=details,
             created_at=accepted_at,
         )
@@ -676,6 +970,26 @@ class JudgeRuntime:
                     created_at=accepted_at,
                 )
                 self.repository.save_tool_call(call)
+                _append_runtime_event(
+                    self.runtime_event_repository,
+                    envelope=envelope,
+                    event_type="tool_call_finished",
+                    occurred_at=accepted_at,
+                    producer="judge_runtime",
+                    payload={
+                        "runtime": "judge",
+                        "task_id": task_id,
+                        "workflow_run_id": judge_input.workflow_run_id,
+                        "judgment_id": judgment.judgment_id,
+                        "tool_call_id": call.tool_call_id,
+                        "tool_name": call.tool_name,
+                        "status": "completed",
+                        "input": {"evidence_id": detail.evidence.evidence_id},
+                        "result_ref": dict(call.result_ref),
+                        "referenced_evidence_ids": list(call.referenced_evidence_ids),
+                        "used_for": call.used_for,
+                    },
+                )
 
         saved_refs = self.evidence_store.save_references(
             envelope,
@@ -695,6 +1009,24 @@ class JudgeRuntime:
             ),
         )
         self.repository.save_references(saved_refs.accepted_references)
+        _append_runtime_event(
+            self.runtime_event_repository,
+            envelope=envelope,
+            event_type="completed",
+            occurred_at=accepted_at,
+            producer="judge_runtime",
+            payload={
+                "runtime": "judge",
+                "task_id": task_id,
+                "workflow_run_id": judge_input.workflow_run_id,
+                "status": "completed",
+                "judgment_id": judgment.judgment_id,
+                "key_positive_evidence_ids": list(judgment.key_positive_evidence_ids),
+                "key_negative_evidence_ids": list(judgment.key_negative_evidence_ids),
+                "referenced_agent_argument_ids": list(judgment.referenced_agent_argument_ids),
+                "saved_reference_count": len(saved_refs.accepted_references),
+            },
+        )
         return JudgeRunOutcome(
             task_id=task_id,
             status="completed",
@@ -708,8 +1040,66 @@ def _validate_workflow_scope(envelope: InternalCallEnvelope, workflow_run_id: st
         raise ValueError("workflow_run_id must match envelope.workflow_run_id")
 
 
+def _summary_limitations(
+    summaries: list[RoundSummaryRecord],
+    argument_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    allowed_argument_ids = set(argument_ids)
+    missing_argument_ids = _unique_ids(
+        argument_id
+        for summary in summaries
+        for argument_id in summary.agent_argument_ids
+        if argument_id not in allowed_argument_ids
+    )
+    if not missing_argument_ids:
+        return ()
+    return (
+        "部分 Round Summary 引用了未纳入本次 Judge 输入的 Agent Argument："
+        f"{', '.join(missing_argument_ids)}。",
+    )
+
+
 def _timestamp(envelope: InternalCallEnvelope) -> datetime:
     return envelope.analysis_time or datetime.now(UTC)
+
+
+def _append_runtime_event(
+    runtime_event_repository: Any | None,
+    *,
+    envelope: InternalCallEnvelope,
+    event_type: str,
+    occurred_at: datetime,
+    producer: str,
+    payload: dict[str, Any],
+) -> None:
+    if runtime_event_repository is None:
+        return
+    runtime_event_repository.append_event(
+        RuntimeEvent(
+            event_id="",
+            event_type=event_type,
+            occurred_at=occurred_at,
+            correlation_id=envelope.correlation_id,
+            workflow_run_id=envelope.workflow_run_id,
+            producer=producer,
+            payload=payload,
+        )
+    )
+
+
+def _gap_types(gaps: tuple[EvidenceGap, ...]) -> list[str]:
+    return [gap.gap_type for gap in gaps]
+
+
+def _enabled_judge_tools(tool_access: JudgeToolAccess) -> list[str]:
+    tools = []
+    if tool_access.get_evidence_detail:
+        tools.append("get_evidence_detail")
+    if tool_access.get_raw_item:
+        tools.append("get_raw_item")
+    if tool_access.query_evidence_references:
+        tools.append("query_evidence_references")
+    return tools
 
 
 def _agent_confidence(details: list[Any]) -> float:

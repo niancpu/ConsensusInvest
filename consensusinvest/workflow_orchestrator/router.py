@@ -18,6 +18,7 @@ from .schemas import (
     AgentArgumentSnapshotView,
     AgentRunSnapshotView,
     EvidenceItemSnapshotView,
+    JudgeToolCallSnapshotView,
     JudgmentSnapshotView,
     RoundSummarySnapshotView,
     TraceEdgeView,
@@ -265,6 +266,7 @@ def _snapshot_view(snapshot: dict[str, Any]) -> WorkflowSnapshotView:
         agent_arguments=[_argument_view(row) for row in snapshot["agent_arguments"]],
         round_summaries=[_round_summary_view(row) for row in snapshot["round_summaries"]],
         judgment=_judgment_view(snapshot["judgment"]) if snapshot["judgment"] else None,
+        judge_tool_calls=[_tool_call_view(row) for row in snapshot["judge_tool_calls"]],
         last_event_sequence=snapshot["last_event_sequence"],
         events=[_event_view(row) for row in snapshot.get("events", [])] if "events" in snapshot else None,
     )
@@ -348,6 +350,18 @@ def _judgment_view(row: Any) -> JudgmentSnapshotView:
         suggested_next_checks=list(row.suggested_next_checks),
         referenced_agent_argument_ids=list(row.referenced_agent_argument_ids),
         limitations=list(row.limitations),
+        created_at=_dt(row.created_at) if row.created_at else None,
+    )
+
+
+def _tool_call_view(row: Any) -> JudgeToolCallSnapshotView:
+    return JudgeToolCallSnapshotView(
+        tool_call_id=row.tool_call_id,
+        judgment_id=row.judgment_id,
+        tool_name=row.tool_name,
+        input=dict(row.input),
+        output_summary=row.output_summary,
+        referenced_evidence_ids=list(row.referenced_evidence_ids),
         created_at=_dt(row.created_at) if row.created_at else None,
     )
 

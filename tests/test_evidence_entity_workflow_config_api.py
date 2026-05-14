@@ -14,43 +14,28 @@ def client() -> TestClient:
     return TestClient(create_app())
 
 
-def test_evidence_detail_structure_raw_and_entity_evidence(client: TestClient) -> None:
+def test_default_runtime_has_no_seeded_evidence_or_entities(client: TestClient) -> None:
     evidence = client.get("/api/v1/evidence/ev_000001")
-    assert evidence.status_code == 200, evidence.text
-    data = evidence.json()["data"]
-    assert data["evidence_id"] == "ev_000001"
-    assert data["raw_ref"] == "raw_000001"
-    assert data["objective_summary"]
-    assert data["links"]["raw"].endswith("/raw")
-
-    structure = client.get("/api/v1/evidence/ev_000001/structure")
-    assert structure.status_code == 200, structure.text
-    assert structure.json()["data"]["evidence_structure_id"] == "struct_000001"
-
-    raw = client.get("/api/v1/evidence/ev_000001/raw")
-    assert raw.status_code == 200, raw.text
-    assert raw.json()["data"]["raw_ref"] == "raw_000001"
-    assert raw.json()["data"]["derived_evidence_ids"] == ["ev_000001"]
+    assert evidence.status_code == 404
+    assert evidence.json()["error"]["code"] == "EVIDENCE_NOT_FOUND"
 
     by_entity = client.get("/api/v1/entities/ent_company_002594/evidence")
-    assert by_entity.status_code == 200, by_entity.text
-    assert by_entity.json()["data"][0]["evidence_id"] == "ev_000001"
+    assert by_entity.status_code == 404
+    assert by_entity.json()["error"]["code"] == "ENTITY_NOT_FOUND"
 
 
 def test_entities_and_relations_api(client: TestClient) -> None:
     listing = client.get("/api/v1/entities", params={"query": "BYD", "type": "company"})
     assert listing.status_code == 200, listing.text
-    row = listing.json()["data"][0]
-    assert row["entity_id"] == "ent_company_002594"
-    assert row["entity_type"] == "company"
+    assert listing.json()["data"] == []
 
     detail = client.get("/api/v1/entities/ent_company_002594")
-    assert detail.status_code == 200, detail.text
-    assert detail.json()["data"]["name"] == "比亚迪"
+    assert detail.status_code == 404
+    assert detail.json()["error"]["code"] == "ENTITY_NOT_FOUND"
 
     relations = client.get("/api/v1/entities/ent_company_002594/relations")
-    assert relations.status_code == 200, relations.text
-    assert relations.json()["data"][0]["relation_type"] == "belongs_to_industry"
+    assert relations.status_code == 404
+    assert relations.json()["error"]["code"] == "ENTITY_NOT_FOUND"
 
     missing = client.get("/api/v1/entities/missing")
     assert missing.status_code == 404

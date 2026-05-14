@@ -96,8 +96,14 @@ def test_workflow_orchestrator_runs_swarm_judge_and_builds_trace() -> None:
     assert len(snapshot["evidence_items"]) == 2
     assert len(snapshot["agent_arguments"]) == 3
     assert len(snapshot["round_summaries"]) == 3
+    assert len(snapshot["judge_tool_calls"]) == 2
+    assert {call.tool_name for call in snapshot["judge_tool_calls"]} == {"get_evidence_detail"}
     assert snapshot["agent_runs"][0].rounds == (1, 2, 3)
     assert snapshot["judgment"].judgment_id == run.judgment_id
+    events = service.list_events(run.workflow_run_id)
+    event_types = [event.event_type for event in events]
+    assert event_types.count("judge_tool_call_completed") == 2
+    assert event_types.index("judge_tool_call_completed") < event_types.index("judgment_completed")
     nodes, edges = service.trace(run.workflow_run_id)
     assert any(node.node_type == "judgment" for node in nodes)
     assert any(node.node_type == "round_summary" for node in nodes)

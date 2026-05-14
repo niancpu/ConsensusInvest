@@ -4,7 +4,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
+import importlib
+import importlib.util
 import json
+import math
 import os
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -267,12 +270,184 @@ class ExaSearchProvider:
         return ProviderSearchResponse(source_type=self.source_type, completed_at=_now_iso())
 
 
+@dataclass(slots=True)
+class AkShareSearchProvider:
+    akshare_module: Any = None
+    source: str = "akshare"
+    source_type: str = "market_data"
+    max_results: int = 20
+
+    @classmethod
+    def from_env(cls) -> AkShareSearchProvider:
+        return cls(max_results=_env_int("CONSENSUSINVEST_AKSHARE_MAX_RESULTS", 20))
+
+    def search(self, envelope: Any, task: SearchTask) -> ProviderSearchResponse:
+        akshare = self._require_module()
+        ticker = _a_share_ticker(task)
+        if not ticker:
+            raise RuntimeError("akshare ticker is required: set SearchTask.target.ticker or stock_code")
+        fetched_at = _now_iso()
+        request_specs = _akshare_request_specs(akshare, envelope, task, ticker)
+        if not request_specs:
+            evidence_types = ",".join(task.scope.evidence_types) or "unspecified"
+            raise RuntimeError(
+                "akshare provider has no supported interface for evidence_types: "
+                f"{evidence_types}"
+            )
+        records: list[dict[str, Any]] = []
+        for api_name, frame in request_specs:
+            records.extend(
+                _tag_records(
+                    _records_from_frame(frame),
+                    provider_api=api_name,
+                    provider_symbol=ticker,
+                )
+            )
+        max_results = _bounded_max_results(task, default=self.max_results, provider_limit=200)
+        items = tuple(
+            _akshare_item(
+                record,
+                task=task,
+                fetched_at=fetched_at,
+                source=self.source,
+                source_type=self.source_type,
+            )
+            for record in records[:max_results]
+        )
+        return ProviderSearchResponse(
+            items=items,
+            worker_id=f"search_provider_{self.source}",
+            source_type=self.source_type,
+            completed_at=fetched_at,
+        )
+
+    def expand(
+        self,
+        envelope: Any,
+        task: SearchTask,
+        action: str,
+        *,
+        seed_item: SearchResultItem | dict[str, Any] | None = None,
+    ) -> ProviderSearchResponse:
+        del envelope, task, action, seed_item
+        return ProviderSearchResponse(source_type=self.source_type, completed_at=_now_iso())
+
+    def _require_module(self) -> Any:
+        if self.akshare_module is not None:
+            return self.akshare_module
+        try:
+            self.akshare_module = importlib.import_module("akshare")
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "akshare package is required for source 'akshare': install akshare "
+                "or disable CONSENSUSINVEST_AKSHARE_ENABLED"
+            ) from exc
+        return self.akshare_module
+
+
+@dataclass(slots=True)
+class TuShareSearchProvider:
+    token: str | None = None
+    tushare_module: Any = None
+    pro_client: Any = None
+    source: str = "tushare"
+    source_type: str = "market_data"
+    max_results: int = 20
+
+    @classmethod
+    def from_env(cls) -> TuShareSearchProvider:
+        return cls(
+            token=os.environ.get("CONSENSUSINVEST_TUSHARE_TOKEN")
+            or os.environ.get("TUSHARE_TOKEN"),
+            max_results=_env_int("CONSENSUSINVEST_TUSHARE_MAX_RESULTS", 20),
+        )
+
+    def search(self, envelope: Any, task: SearchTask) -> ProviderSearchResponse:
+        pro = self._require_client()
+        ts_code = _tushare_ts_code(task)
+        if not ts_code:
+            raise RuntimeError("tushare ts_code is required: set SearchTask.target.stock_code or ticker")
+        fetched_at = _now_iso()
+        request_specs = _tushare_request_specs(pro, envelope, task, ts_code)
+        if not request_specs:
+            evidence_types = ",".join(task.scope.evidence_types) or "unspecified"
+            raise RuntimeError(
+                "tushare provider has no supported interface for evidence_types: "
+                f"{evidence_types}"
+            )
+        records: list[dict[str, Any]] = []
+        for api_name, frame in request_specs:
+            records.extend(
+                _tag_records(
+                    _records_from_frame(frame),
+                    provider_api=api_name,
+                    provider_symbol=ts_code,
+                )
+            )
+        max_results = _bounded_max_results(task, default=self.max_results, provider_limit=500)
+        items = tuple(
+            _tushare_item(
+                record,
+                task=task,
+                fetched_at=fetched_at,
+                source=self.source,
+                source_type=self.source_type,
+            )
+            for record in records[:max_results]
+        )
+        return ProviderSearchResponse(
+            items=items,
+            worker_id=f"search_provider_{self.source}",
+            source_type=self.source_type,
+            completed_at=fetched_at,
+        )
+
+    def expand(
+        self,
+        envelope: Any,
+        task: SearchTask,
+        action: str,
+        *,
+        seed_item: SearchResultItem | dict[str, Any] | None = None,
+    ) -> ProviderSearchResponse:
+        del envelope, task, action, seed_item
+        return ProviderSearchResponse(source_type=self.source_type, completed_at=_now_iso())
+
+    def _require_client(self) -> Any:
+        if self.pro_client is not None:
+            return self.pro_client
+        if not self.token:
+            raise RuntimeError(
+                "tushare token is required for source 'tushare': set "
+                "CONSENSUSINVEST_TUSHARE_TOKEN or TUSHARE_TOKEN"
+            )
+        if self.tushare_module is None:
+            try:
+                self.tushare_module = importlib.import_module("tushare")
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "tushare package is required for source 'tushare': install tushare "
+                    "or unset CONSENSUSINVEST_TUSHARE_TOKEN/TUSHARE_TOKEN"
+                ) from exc
+        try:
+            self.pro_client = self.tushare_module.pro_api(self.token)
+        except Exception as exc:
+            raise RuntimeError(f"tushare pro_api initialization failed: {exc}") from exc
+        return self.pro_client
+
+
 def build_real_search_providers_from_env() -> dict[str, SearchProvider]:
     providers: dict[str, SearchProvider] = {}
     if os.environ.get("TAVILY_API_KEY"):
         providers["tavily"] = TavilySearchProvider.from_env()
     if os.environ.get("EXA_API_KEY"):
         providers["exa"] = ExaSearchProvider.from_env()
+    if _provider_enabled("CONSENSUSINVEST_AKSHARE_ENABLED", "akshare"):
+        providers["akshare"] = AkShareSearchProvider.from_env()
+    tushare_enabled = _env_optional_bool("CONSENSUSINVEST_TUSHARE_ENABLED")
+    tushare_token = os.environ.get("CONSENSUSINVEST_TUSHARE_TOKEN") or os.environ.get("TUSHARE_TOKEN")
+    if tushare_enabled is True or (tushare_enabled is not False and tushare_token):
+        providers["tushare"] = TuShareSearchProvider.from_env()
     return providers
 
 
@@ -424,6 +599,168 @@ def _exa_item(
     }
 
 
+def _akshare_request_specs(
+    akshare: Any,
+    envelope: Any,
+    task: SearchTask,
+    ticker: str,
+) -> list[tuple[str, Any]]:
+    evidence_types = set(task.scope.evidence_types)
+    start_date, end_date = _date_bounds_yyyymmdd(envelope, task)
+    specs: list[tuple[str, Any]] = []
+    if not evidence_types or evidence_types & {"company_news", "industry_news"}:
+        specs.append(("stock_news_em", _call_provider_method(akshare, "stock_news_em", symbol=ticker)))
+    if evidence_types & {"financial_report"}:
+        specs.append(
+            (
+                "stock_financial_abstract",
+                _call_provider_method(akshare, "stock_financial_abstract", symbol=ticker),
+            )
+        )
+    if evidence_types & {"market_snapshot"}:
+        specs.append(
+            (
+                "stock_zh_a_hist",
+                _call_provider_method(
+                    akshare,
+                    "stock_zh_a_hist",
+                    symbol=ticker,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="",
+                ),
+            )
+        )
+    return [(name, frame) for name, frame in specs if frame is not _MISSING_PROVIDER_METHOD]
+
+
+def _tushare_request_specs(
+    pro: Any,
+    envelope: Any,
+    task: SearchTask,
+    ts_code: str,
+) -> list[tuple[str, Any]]:
+    evidence_types = set(task.scope.evidence_types)
+    start_date, end_date = _date_bounds_yyyymmdd(envelope, task)
+    specs: list[tuple[str, Any]] = []
+    if not evidence_types or evidence_types & {"market_snapshot"}:
+        specs.append(
+            (
+                "daily_basic",
+                _call_provider_method(
+                    pro,
+                    "daily_basic",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
+            )
+        )
+    if evidence_types & {"financial_report"}:
+        specs.append(
+            (
+                "fina_indicator",
+                _call_provider_method(
+                    pro,
+                    "fina_indicator",
+                    ts_code=ts_code,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
+            )
+        )
+    return [(name, frame) for name, frame in specs if frame is not _MISSING_PROVIDER_METHOD]
+
+
+def _akshare_item(
+    record: dict[str, Any],
+    *,
+    task: SearchTask,
+    fetched_at: str,
+    source: str,
+    source_type: str,
+) -> dict[str, Any]:
+    safe_record = _json_safe(record)
+    api_name = _clean(record.get("_provider_api")) or "akshare"
+    symbol = _clean(record.get("_provider_symbol")) or _a_share_ticker(task)
+    title = _first_clean(
+        record,
+        ("新闻标题", "标题", "title", "name", "股票简称", "简称", "日期"),
+    )
+    content = _first_clean(record, ("新闻内容", "内容", "content", "摘要", "summary"))
+    if content is None:
+        content = json.dumps(safe_record, ensure_ascii=False, default=str)
+    url = _first_clean(record, ("新闻链接", "链接", "url", "URL"))
+    publish_time = _provider_datetime(
+        _first_clean(record, ("发布时间", "日期", "时间", "publish_time", "published_at"))
+    )
+    source_locator = url or f"akshare://{api_name}/{symbol or 'unknown'}"
+    return {
+        "external_id": _external_id(source, f"{api_name}:{symbol}:{safe_record}"),
+        "source": source,
+        "source_type": source_type,
+        "title": title or f"AkShare {api_name} {symbol or ''}".strip(),
+        "url": source_locator,
+        "content": content,
+        "content_preview": _trim(content, 500),
+        "publish_time": publish_time,
+        "fetched_at": fetched_at,
+        "author": _first_clean(record, ("文章来源", "来源", "author")),
+        "language": task.constraints.language,
+        "raw_payload": {
+            "provider_response": safe_record,
+            "provider_api": api_name,
+            "provider_symbol": symbol,
+        },
+        "source_quality_hint": 0.75,
+        "metadata": {
+            "evidence_type": _first_or_none(task.scope.evidence_types),
+            "provider_api": api_name,
+        },
+    }
+
+
+def _tushare_item(
+    record: dict[str, Any],
+    *,
+    task: SearchTask,
+    fetched_at: str,
+    source: str,
+    source_type: str,
+) -> dict[str, Any]:
+    safe_record = _json_safe(record)
+    api_name = _clean(record.get("_provider_api")) or "tushare"
+    ts_code = _clean(record.get("_provider_symbol")) or _tushare_ts_code(task)
+    date_value = _first_clean(record, ("ann_date", "trade_date", "end_date", "report_date"))
+    content = json.dumps(safe_record, ensure_ascii=False, default=str)
+    source_locator = f"tushare://{api_name}/{ts_code or 'unknown'}"
+    if date_value:
+        source_locator = f"{source_locator}/{date_value}"
+    return {
+        "external_id": _external_id(source, f"{api_name}:{ts_code}:{safe_record}"),
+        "source": source,
+        "source_type": source_type,
+        "title": f"TuShare {api_name} {ts_code or ''} {date_value or ''}".strip(),
+        "url": source_locator,
+        "content": content,
+        "content_preview": _trim(content, 500),
+        "publish_time": _provider_datetime(_compact_date(date_value)),
+        "fetched_at": fetched_at,
+        "language": task.constraints.language,
+        "raw_payload": {
+            "provider_response": safe_record,
+            "provider_api": api_name,
+            "provider_symbol": ts_code,
+        },
+        "source_quality_hint": 0.8,
+        "metadata": {
+            "evidence_type": _first_or_none(task.scope.evidence_types),
+            "provider_api": api_name,
+        },
+    }
+
+
 def _bounded_max_results(task: SearchTask, *, default: int, provider_limit: int) -> int:
     requested = task.scope.max_results if task.scope.max_results is not None else default
     return max(1, min(int(requested), provider_limit))
@@ -434,6 +771,62 @@ def _response_results(response: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(results, list):
         return []
     return [item for item in results if isinstance(item, dict)]
+
+
+_MISSING_PROVIDER_METHOD = object()
+
+
+def _call_provider_method(provider: Any, name: str, **kwargs: Any) -> Any:
+    method = getattr(provider, name, None)
+    if not callable(method):
+        return _MISSING_PROVIDER_METHOD
+    try:
+        return method(**kwargs)
+    except TypeError as exc:
+        compact_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        try:
+            return method(**compact_kwargs)
+        except TypeError:
+            raise RuntimeError(f"{name} provider call failed: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"{name} provider call failed: {exc}") from exc
+
+
+def _records_from_frame(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        if all(isinstance(item, list | tuple) for item in value.values()):
+            keys = list(value)
+            length = max((len(value[key]) for key in keys), default=0)
+            return [
+                {key: value[key][index] if index < len(value[key]) else None for key in keys}
+                for index in range(length)
+            ]
+        return [value]
+    if isinstance(value, list | tuple):
+        return [item for item in value if isinstance(item, dict)]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        records = to_dict("records")
+        if isinstance(records, list):
+            return [item for item in records if isinstance(item, dict)]
+    return []
+
+
+def _tag_records(
+    records: list[dict[str, Any]],
+    *,
+    provider_api: str,
+    provider_symbol: str,
+) -> list[dict[str, Any]]:
+    tagged: list[dict[str, Any]] = []
+    for record in records:
+        item = dict(record)
+        item["_provider_api"] = provider_api
+        item["_provider_symbol"] = provider_symbol
+        tagged.append(item)
+    return tagged
 
 
 def _safe_request_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -481,6 +874,76 @@ def _provider_datetime(value: Any) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).isoformat()
+
+
+def _date_bounds_yyyymmdd(envelope: Any, task: SearchTask) -> tuple[str | None, str | None]:
+    analysis_time = getattr(envelope, "analysis_time", None)
+    if analysis_time is None:
+        return None, None
+    end = _as_utc(analysis_time)
+    lookback_days = task.scope.lookback_days
+    if lookback_days is None or lookback_days <= 0:
+        return None, end.strftime("%Y%m%d")
+    start = end - timedelta(days=lookback_days)
+    return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+def _a_share_ticker(task: SearchTask) -> str | None:
+    if task.target.ticker:
+        return task.target.ticker.strip()
+    if task.target.stock_code:
+        return task.target.stock_code.split(".", 1)[0].strip()
+    return None
+
+
+def _tushare_ts_code(task: SearchTask) -> str | None:
+    if task.target.stock_code:
+        text = task.target.stock_code.strip().upper()
+        if "." in text:
+            return text
+    ticker = _a_share_ticker(task)
+    if not ticker:
+        return None
+    suffix = "SH" if ticker.startswith(("5", "6", "9")) else "SZ"
+    return f"{ticker}.{suffix}"
+
+
+def _first_clean(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = _clean(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _compact_date(value: Any) -> str | None:
+    text = _clean(value)
+    if text is None:
+        return None
+    if len(text) == 8 and text.isdigit():
+        return f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    return text
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, datetime):
+        return value.isoformat()
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return _json_safe(item())
+        except (TypeError, ValueError):
+            pass
+    try:
+        if isinstance(value, float) and math.isnan(value):
+            return None
+    except TypeError:
+        pass
+    return value
 
 
 def _clean(value: Any) -> str | None:
@@ -538,3 +1001,24 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _provider_enabled(env_name: str, module_name: str) -> bool:
+    configured = _env_optional_bool(env_name)
+    if configured is not None:
+        return configured
+    return _module_available(module_name)
+
+
+def _env_optional_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False

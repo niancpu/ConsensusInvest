@@ -1,4 +1,4 @@
-"""Read-only MVP repository for entities and entity relations."""
+"""In-memory entity repository for explicit local/test runtime state."""
 
 from __future__ import annotations
 

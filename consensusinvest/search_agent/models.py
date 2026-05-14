@@ -8,9 +8,11 @@ from typing import Any
 class SearchTaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING = "waiting"
     COMPLETED = "completed"
     PARTIAL_COMPLETED = "partial_completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class SourceStatus(StrEnum):

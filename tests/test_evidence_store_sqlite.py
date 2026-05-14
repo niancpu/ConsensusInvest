@@ -100,6 +100,74 @@ class SQLiteEvidenceStoreTests(unittest.TestCase):
             self.assertEqual("https://example.com/news/001", raw.url)
             reopened.close()
 
+    def test_ingest_writes_evidence_entities_and_reopen_queries_by_entity(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "evidence.db"
+            store = self.make_store(db_path)
+            envelope = self.make_envelope()
+            item = self.make_item(
+                entity_ids=[
+                    "ent_company_002594",
+                    "ent_industry_ev",
+                    "ent_industry_ev",
+                ],
+            )
+
+            result = store.ingest_search_result(envelope, self.make_package(item))
+
+            self.assertEqual("accepted", result.status)
+            table = store._conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'evidence_entities'
+                """
+            ).fetchone()
+            rows = store._conn.execute(
+                """
+                SELECT evidence_id, entity_id
+                FROM evidence_entities
+                ORDER BY entity_id
+                """
+            ).fetchall()
+            duplicate_insert = store._conn.execute(
+                """
+                INSERT OR IGNORE INTO evidence_entities (evidence_id, entity_id)
+                VALUES (?, ?)
+                """,
+                ("ev_000001", "ent_industry_ev"),
+            )
+
+            self.assertIsNotNone(table)
+            self.assertEqual(2, len(rows))
+            self.assertEqual(0, duplicate_insert.rowcount)
+            self.assertEqual(
+                {
+                    ("ev_000001", "ent_company_002594"),
+                    ("ev_000001", "ent_industry_ev"),
+                },
+                {(row["evidence_id"], row["entity_id"]) for row in rows},
+            )
+
+            store.close()
+            reopened = self.make_store(db_path)
+            page = reopened.query_evidence(
+                envelope,
+                {
+                    "entity_ids": ["ent_industry_ev"],
+                    "limit": 10,
+                    "offset": 0,
+                },
+            )
+
+            self.assertEqual(1, page.total)
+            self.assertEqual("ev_000001", page.items[0].evidence_id)
+            self.assertEqual(
+                ("ent_company_002594", "ent_industry_ev"),
+                page.items[0].entity_ids,
+            )
+            reopened.close()
+
     def test_rejects_duplicate_url_external_id_and_content(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = self.make_store(Path(tmpdir) / "evidence.db")
@@ -241,13 +309,10 @@ class SQLiteEvidenceStoreTests(unittest.TestCase):
                 MarketSnapshotDraft(
                     snapshot_type="stock_quote",
                     ticker="002594",
-                    entity_ids=("ent_company_002594",),
-                    source="akshare",
-                    snapshot_time="2026-05-14T10:00:00+00:00",
-                    metrics={"price": 210.0},
+                    snapshot_time="2026-05-13T09:30:00+00:00",
+                    metrics={"price": 201.0},
                 ),
             )
-
             default_page = store.query_market_snapshots(
                 envelope,
                 MarketSnapshotQuery(ticker="002594", snapshot_types=("stock_quote",)),
@@ -262,7 +327,8 @@ class SQLiteEvidenceStoreTests(unittest.TestCase):
             )
             loaded = store.get_market_snapshot(envelope, older.market_snapshot_id)
 
-            self.assertEqual(1, default_page.total)
+            self.assertEqual(2, default_page.total)
+            self.assertEqual(201.0, default_page.items[0].metrics["price"])
             self.assertEqual(1, explicit_page.total)
             self.assertEqual(older.market_snapshot_id, explicit_page.items[0].market_snapshot_id)
             self.assertEqual({"price": 200.0, "change_rate": 1.2}, loaded.metrics)
@@ -274,6 +340,32 @@ class SQLiteEvidenceStoreTests(unittest.TestCase):
                         snapshot_time_lte="2026-05-14T10:00:00+00:00",
                     ),
                 )
+            store.close()
+
+    def test_market_snapshot_rejects_snapshot_time_after_analysis_time(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = self.make_store(Path(tmpdir) / "evidence.db")
+            envelope = self.make_envelope()
+
+            with self.assertRaises(ValueError) as context:
+                store.save_market_snapshot(
+                    envelope,
+                    MarketSnapshotDraft(
+                        snapshot_type="stock_quote",
+                        ticker="002594",
+                        snapshot_time="2026-05-14T10:00:00+00:00",
+                        metrics={"price": 210.0},
+                    ),
+                )
+
+            message = str(context.exception)
+            self.assertIn("snapshot_time", message)
+            self.assertIn("analysis_time", message)
+            page = store.query_market_snapshots(
+                envelope,
+                MarketSnapshotQuery(ticker="002594", snapshot_types=("stock_quote",)),
+            )
+            self.assertEqual(0, page.total)
             store.close()
 
 

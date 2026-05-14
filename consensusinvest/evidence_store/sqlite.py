@@ -13,33 +13,25 @@ from consensusinvest.evidence_normalizer.service import EvidenceNormalizer
 from consensusinvest.evidence_normalizer.models import NormalizedEvidenceDraft
 from consensusinvest.evidence_store.client import (
     _ALLOWED_REFERENCE_ROLES,
-    _ALLOWED_SNAPSHOT_TYPES,
-    _as_float,
     _as_int,
     _clean_key_value,
     _clean_sequence,
     _coerce_dataclass,
-    _content_dedupe_key,
     _datetime_after,
     _datetime_gte,
     _datetime_lte,
     _evidence_sort_key,
-    _evidence_type,
     _find_forbidden_key,
-    _freshness,
     _ingest_context,
     _intersects_if_requested,
     _in_if_requested,
-    _item_dedupe_key,
-    _item_entity_ids,
-    _iter_package_items,
     _market_snapshot_sort_key,
     _matches_optional,
     _matches_workflow_run_id,
     _parse_datetime,
+    _prepare_market_snapshot_for_save,
     _rejected,
     _source_quality_at_least,
-    _target_ticker,
     _timestamp_for_create,
     _to_mapping,
     _value,
@@ -117,6 +109,7 @@ class SQLiteEvidenceStoreClient:
                 with self._conn:
                     self._insert_raw(raw_item)
                     self._insert_evidence(evidence_item)
+                    self._replace_evidence_entities(evidence_item)
                     for item_key in draft.dedupe_keys:
                         self._insert_dedupe_key(
                             item_key,
@@ -166,12 +159,15 @@ class SQLiteEvidenceStoreClient:
         publish_lte = _parse_datetime(evidence_query.publish_time_lte)
         publish_gte = _parse_datetime(evidence_query.publish_time_gte)
         raw_items = self._load_raw_items_by_ref()
+        allowed_evidence_ids = self._matching_evidence_ids_for_entities(
+            evidence_query.entity_ids
+        )
 
         rows = [
             item
             for item in self._load_all_evidence()
             if _matches_optional(item.ticker, evidence_query.ticker)
-            and _intersects_if_requested(item.entity_ids, evidence_query.entity_ids)
+            and (allowed_evidence_ids is None or item.evidence_id in allowed_evidence_ids)
             and _in_if_requested(item.evidence_type, evidence_query.evidence_types)
             and _in_if_requested(item.source, evidence_query.sources)
             and _in_if_requested(item.source_type, evidence_query.source_types)
@@ -374,18 +370,10 @@ class SQLiteEvidenceStoreClient:
         snapshot: MarketSnapshotDraft | Mapping[str, Any],
     ) -> MarketSnapshot:
         envelope.validate_for_create()
-        violation_path = _find_forbidden_key(snapshot)
-        if violation_path is not None:
-            raise ValueError(
-                f"write_boundary_violation: directional field is not allowed in MarketSnapshot: {violation_path}"
-            )
-        draft = _coerce_dataclass(MarketSnapshotDraft, snapshot)
-        if draft.snapshot_type not in _ALLOWED_SNAPSHOT_TYPES:
-            raise ValueError(f"invalid_snapshot_type: {draft.snapshot_type}")
-        snapshot_time = _parse_datetime(draft.snapshot_time)
-        if snapshot_time is None:
-            raise ValueError("snapshot_time is required")
-        fetched_at = _parse_datetime(draft.fetched_at) or _timestamp_for_create(envelope)
+        draft, snapshot_time, fetched_at = _prepare_market_snapshot_for_save(
+            envelope,
+            snapshot,
+        )
 
         saved = MarketSnapshot(
             market_snapshot_id=self._next_id("mkt_snap"),
@@ -512,6 +500,16 @@ class SQLiteEvidenceStoreClient:
                     FOREIGN KEY(raw_ref) REFERENCES raw_items(raw_ref)
                 );
 
+                CREATE TABLE IF NOT EXISTS evidence_entities (
+                    evidence_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    PRIMARY KEY(evidence_id, entity_id),
+                    FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_evidence_entities_entity_id
+                    ON evidence_entities(entity_id);
+
                 CREATE TABLE IF NOT EXISTS evidence_structures (
                     structure_id TEXT PRIMARY KEY,
                     evidence_id TEXT NOT NULL,
@@ -561,69 +559,6 @@ class SQLiteEvidenceStoreClient:
                 );
                 """
             )
-
-    def _build_raw_and_evidence(
-        self,
-        envelope: InternalCallEnvelope,
-        package: Any,
-        data: Mapping[str, Any],
-        publish_time: datetime | None,
-    ) -> tuple[RawItem, EvidenceItem]:
-        source = _clean_key_value(data.get("source")) or _clean_key_value(_value(package, "source")) or "unknown"
-        source_type = _clean_key_value(data.get("source_type")) or _clean_key_value(
-            _value(package, "source_type")
-        )
-        target = _value(package, "target")
-        ticker = _clean_key_value(data.get("ticker")) or _target_ticker(target)
-        entity_ids = _item_entity_ids(data, target)
-        fetched_at = (
-            _parse_datetime(data.get("fetched_at"))
-            or _parse_datetime(_value(package, "completed_at"))
-            or _timestamp_for_create(envelope)
-        )
-        raw_ref = self._next_id("raw")
-        evidence_id = self._next_id("ev")
-        raw_item = RawItem(
-            raw_ref=raw_ref,
-            source=source,
-            source_type=source_type,
-            ticker=ticker,
-            entity_ids=tuple(entity_ids),
-            title=_clean_key_value(data.get("title")),
-            content=_clean_key_value(data.get("content")),
-            content_preview=_clean_key_value(data.get("content_preview") or data.get("snippet")),
-            url=_clean_key_value(data.get("url")),
-            publish_time=publish_time,
-            fetched_at=fetched_at,
-            author=_clean_key_value(data.get("author")),
-            language=_clean_key_value(data.get("language")),
-            raw_payload=dict(data.get("raw_payload") or {}),
-            ingest_context=_ingest_context(
-                envelope,
-                task_id=_clean_key_value(_value(package, "task_id")),
-            ),
-        )
-        evidence_item = EvidenceItem(
-            evidence_id=evidence_id,
-            raw_ref=raw_ref,
-            ticker=ticker,
-            entity_ids=tuple(entity_ids),
-            source=source,
-            source_type=source_type,
-            evidence_type=_evidence_type(data, package, source_type),
-            title=raw_item.title,
-            content=raw_item.content or raw_item.content_preview or raw_item.title,
-            url=raw_item.url,
-            publish_time=publish_time,
-            fetched_at=fetched_at,
-            source_quality=_as_float(data.get("source_quality") or data.get("source_quality_hint")),
-            relevance=_as_float(data.get("relevance")),
-            freshness=_as_float(data.get("freshness"))
-            if data.get("freshness") is not None
-            else _freshness(publish_time, envelope.analysis_time),
-            quality_notes=tuple(_clean_sequence(data.get("quality_notes"))),
-        )
-        return raw_item, evidence_item
 
     def _build_raw_and_evidence_from_draft(
         self,
@@ -730,6 +665,20 @@ class SQLiteEvidenceStoreClient:
             ),
         )
 
+    def _replace_evidence_entities(self, item: EvidenceItem) -> None:
+        self._conn.execute(
+            "DELETE FROM evidence_entities WHERE evidence_id = ?",
+            (item.evidence_id,),
+        )
+        for entity_id in _clean_sequence(item.entity_ids):
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO evidence_entities (evidence_id, entity_id)
+                VALUES (?, ?)
+                """,
+                (item.evidence_id, entity_id),
+            )
+
     def _insert_dedupe_key(self, item_key: str, raw_ref: str, evidence_id: str) -> None:
         self._conn.execute(
             "INSERT INTO dedupe_keys (item_key, raw_ref, evidence_id) VALUES (?, ?, ?)",
@@ -790,6 +739,21 @@ class SQLiteEvidenceStoreClient:
             for row in self._conn.execute("SELECT * FROM evidence_items").fetchall()
         ]
 
+    def _matching_evidence_ids_for_entities(self, entity_ids: tuple[str, ...]) -> set[str] | None:
+        requested = _clean_sequence(entity_ids)
+        if not requested:
+            return None
+        placeholders = ",".join("?" for _ in requested)
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT evidence_id
+            FROM evidence_entities
+            WHERE entity_id IN ({placeholders})
+            """,
+            tuple(requested),
+        ).fetchall()
+        return {str(row["evidence_id"]) for row in rows}
+
     def _load_raw_items_by_ref(self) -> dict[str, RawItem]:
         return {
             item.raw_ref: item
@@ -820,20 +784,6 @@ class SQLiteEvidenceStoreClient:
 
 def _json_dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def _dedupe_keys(data: Mapping[str, Any], package: Any, primary_item_key: str) -> list[str]:
-    keys: list[str] = [primary_item_key]
-    source = _clean_key_value(data.get("source")) or _clean_key_value(_value(package, "source")) or "unknown"
-    external_id = _clean_key_value(data.get("external_id"))
-    if external_id is not None:
-        external_key = f"source:{source}:external_id:{external_id}"
-        if external_key not in keys:
-            keys.append(external_key)
-    content_key = _content_dedupe_key(data, package)
-    if content_key is not None and content_key not in keys:
-        keys.append(content_key)
-    return keys
 
 
 def _json_load(value: str | None, default: Any) -> Any:

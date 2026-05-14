@@ -30,10 +30,14 @@ class LiteLLMAgentProvider:
     timeout_seconds: float = 60.0
 
     @classmethod
-    def from_env(cls) -> LiteLLMAgentProvider | None:
+    def from_env(cls) -> LiteLLMAgentProvider:
         provider = os.environ.get("CONSENSUSINVEST_LLM_PROVIDER", "").strip().lower()
+        if not provider:
+            raise RuntimeError(
+                "CONSENSUSINVEST_LLM_PROVIDER is required; set it to 'litellm' for real Agent runtime"
+            )
         if provider not in {"litellm", "lite_llm"}:
-            return None
+            raise RuntimeError(f"unsupported CONSENSUSINVEST_LLM_PROVIDER: {provider}")
         model = os.environ.get("CONSENSUSINVEST_LLM_MODEL", "").strip()
         swarm_model = os.environ.get("CONSENSUSINVEST_SWARM_MODEL", "").strip() or None
         judge_model = os.environ.get("CONSENSUSINVEST_JUDGE_MODEL", "").strip() or None
@@ -86,7 +90,7 @@ class LiteLLMAgentProvider:
         return _parse_json_object(content)
 
 
-def build_agent_llm_provider_from_env() -> AgentLLMProvider | None:
+def build_agent_llm_provider_from_env() -> AgentLLMProvider:
     return LiteLLMAgentProvider.from_env()
 
 

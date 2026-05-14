@@ -7,11 +7,14 @@ from consensusinvest.runtime.models import (
     RuntimeEvent,
     TaskStatus,
 )
+from consensusinvest.runtime.repository import RuntimeEventArchiveResult, SQLiteRuntimeEventRepository
 
 __all__ = [
     "AsyncTaskReceipt",
     "InternalCallEnvelope",
     "InternalError",
     "RuntimeEvent",
+    "RuntimeEventArchiveResult",
+    "SQLiteRuntimeEventRepository",
     "TaskStatus",
 ]

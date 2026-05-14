@@ -13,21 +13,22 @@ from .models import (
 )
 from .pool import SearchAgentPool
 from .providers import (
+    AkShareSearchProvider,
     ExaSearchProvider,
     HTTPJsonClient,
-    MockSearchProvider,
     ProviderSearchResponse,
     SearchExpansionCandidate,
     SearchProvider,
     TavilySearchProvider,
+    TuShareSearchProvider,
     build_real_search_providers_from_env,
 )
 from .repository import SQLiteSearchTaskRepository
 
 __all__ = [
     "ExaSearchProvider",
+    "AkShareSearchProvider",
     "HTTPJsonClient",
-    "MockSearchProvider",
     "ProviderSearchResponse",
     "SQLiteSearchTaskRepository",
     "SearchAgentPool",
@@ -45,5 +46,6 @@ __all__ = [
     "SearchTaskStatus",
     "SourceStatus",
     "TavilySearchProvider",
+    "TuShareSearchProvider",
     "build_real_search_providers_from_env",
 ]

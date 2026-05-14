@@ -31,6 +31,7 @@ from consensusinvest.agent_swarm.llm import (
 )
 from consensusinvest.agent_swarm.repository import InMemoryAgentSwarmRepository
 from consensusinvest.agent_swarm.service import AgentSwarmRuntime, JudgeRuntime
+from consensusinvest.agent_swarm.sqlite_repository import SQLiteAgentSwarmRepository
 
 __all__ = [
     "AgentLLMProvider",
@@ -56,6 +57,7 @@ __all__ = [
     "LiteLLMAgentProvider",
     "RoundSummaryDraft",
     "RoundSummaryRecord",
+    "SQLiteAgentSwarmRepository",
     "SuggestedSearch",
     "build_agent_llm_provider_from_env",
     "get_debate_workflow_config",

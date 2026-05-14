@@ -183,6 +183,40 @@ class EvidenceStoreContractTests(unittest.TestCase):
         self.assertEqual(1, len(page.items))
         self.assertEqual("ev_000001", page.items[0].evidence_id)
 
+    def test_query_evidence_filters_by_entity_index(self):
+        store = FakeEvidenceStoreClient()
+        envelope = self.make_envelope()
+        items = [
+            self.make_item(
+                external_id="news_001",
+                url="https://example.com/news/001",
+                entity_ids=["ent_company_002594", "ent_industry_ev"],
+            ),
+            self.make_item(
+                external_id="news_002",
+                url="https://example.com/news/002",
+                content="Second distinct fact.",
+                entity_ids=["ent_company_000001"],
+            ),
+        ]
+        store.ingest_search_result(envelope, self.make_package(*items))
+
+        page = store.query_evidence(
+            envelope,
+            {
+                "entity_ids": ["ent_industry_ev"],
+                "limit": 10,
+                "offset": 0,
+            },
+        )
+
+        self.assertEqual(1, page.total)
+        self.assertEqual("ev_000001", page.items[0].evidence_id)
+        self.assertEqual(
+            ("ent_company_002594", "ent_industry_ev"),
+            page.items[0].entity_ids,
+        )
+
     def test_save_structure_versions_and_get_evidence_returns_latest(self):
         store = FakeEvidenceStoreClient()
         envelope = self.make_envelope()
@@ -297,6 +331,25 @@ class EvidenceStoreContractTests(unittest.TestCase):
 
         self.assertIn("write_boundary_violation", str(context.exception))
 
+    def test_market_snapshot_rejects_snapshot_time_after_analysis_time(self):
+        store = FakeEvidenceStoreClient()
+        envelope = self.make_envelope()
+
+        with self.assertRaises(ValueError) as context:
+            store.save_market_snapshot(
+                envelope,
+                MarketSnapshotDraft(
+                    snapshot_type="stock_quote",
+                    ticker="002594",
+                    snapshot_time="2026-05-14T10:00:00+00:00",
+                    metrics={"price": 210.0},
+                ),
+            )
+
+        message = str(context.exception)
+        self.assertIn("snapshot_time", message)
+        self.assertIn("analysis_time", message)
+
     def test_market_snapshot_query_defaults_to_analysis_time_boundary(self):
         store = FakeEvidenceStoreClient()
         envelope = self.make_envelope()
@@ -314,8 +367,8 @@ class EvidenceStoreContractTests(unittest.TestCase):
             MarketSnapshotDraft(
                 snapshot_type="stock_quote",
                 ticker="002594",
-                snapshot_time="2026-05-14T10:00:00+00:00",
-                metrics={"price": 210.0},
+                snapshot_time="2026-05-13T09:30:00+00:00",
+                metrics={"price": 201.0},
             ),
         )
 
@@ -324,8 +377,8 @@ class EvidenceStoreContractTests(unittest.TestCase):
             MarketSnapshotQuery(ticker="002594", snapshot_types=("stock_quote",)),
         )
 
-        self.assertEqual(1, page.total)
-        self.assertEqual(200.0, page.items[0].metrics["price"])
+        self.assertEqual(2, page.total)
+        self.assertEqual(201.0, page.items[0].metrics["price"])
 
 
 if __name__ == "__main__":

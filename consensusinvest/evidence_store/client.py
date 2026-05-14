@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, fields, is_dataclass
 from datetime import UTC, datetime
-from hashlib import sha256
 from typing import Any, Protocol, TypeVar
 
 from consensusinvest.evidence_normalizer.service import EvidenceNormalizer
@@ -143,6 +142,7 @@ class InMemoryEvidenceStoreClient:
         self._raw_items: dict[str, RawItem] = {}
         self._evidence_items: dict[str, EvidenceItem] = {}
         self._evidence_by_raw_ref: dict[str, str] = {}
+        self._evidence_entities: dict[str, set[str]] = {}
         self._structures_by_evidence_id: dict[str, list[EvidenceStructure]] = {}
         self._references: list[EvidenceReference] = []
         self._market_snapshots: dict[str, MarketSnapshot] = {}
@@ -194,6 +194,7 @@ class InMemoryEvidenceStoreClient:
             self._raw_items[raw_item.raw_ref] = raw_item
             self._evidence_items[evidence_item.evidence_id] = evidence_item
             self._evidence_by_raw_ref[raw_item.raw_ref] = evidence_item.evidence_id
+            self._index_evidence_entities(evidence_item)
             self._remember_dedupe_keys(draft.dedupe_keys)
 
             accepted_raw_refs.append(raw_item.raw_ref)
@@ -227,11 +228,12 @@ class InMemoryEvidenceStoreClient:
         publish_gte = _parse_datetime(evidence_query.publish_time_gte)
 
         rows = list(self._evidence_items.values())
+        allowed_evidence_ids = self._matching_evidence_ids_for_entities(evidence_query.entity_ids)
         rows = [
             item
             for item in rows
             if _matches_optional(item.ticker, evidence_query.ticker)
-            and _intersects_if_requested(item.entity_ids, evidence_query.entity_ids)
+            and (allowed_evidence_ids is None or item.evidence_id in allowed_evidence_ids)
             and _in_if_requested(item.evidence_type, evidence_query.evidence_types)
             and _in_if_requested(item.source, evidence_query.sources)
             and _in_if_requested(item.source_type, evidence_query.source_types)
@@ -386,18 +388,10 @@ class InMemoryEvidenceStoreClient:
         snapshot: MarketSnapshotDraft | Mapping[str, Any],
     ) -> MarketSnapshot:
         envelope.validate_for_create()
-        violation_path = _find_forbidden_key(snapshot)
-        if violation_path is not None:
-            raise ValueError(
-                f"write_boundary_violation: directional field is not allowed in MarketSnapshot: {violation_path}"
-            )
-        draft = _coerce_dataclass(MarketSnapshotDraft, snapshot)
-        if draft.snapshot_type not in _ALLOWED_SNAPSHOT_TYPES:
-            raise ValueError(f"invalid_snapshot_type: {draft.snapshot_type}")
-        snapshot_time = _parse_datetime(draft.snapshot_time)
-        if snapshot_time is None:
-            raise ValueError("snapshot_time is required")
-        fetched_at = _parse_datetime(draft.fetched_at) or _timestamp_for_create(envelope)
+        draft, snapshot_time, fetched_at = _prepare_market_snapshot_for_save(
+            envelope,
+            snapshot,
+        )
 
         saved = MarketSnapshot(
             market_snapshot_id=self._next_id("mkt_snap"),
@@ -454,69 +448,6 @@ class InMemoryEvidenceStoreClient:
         if snapshot is None:
             raise KeyError(f"market_snapshot_not_found: {market_snapshot_id}")
         return snapshot
-
-    def _build_raw_and_evidence(
-        self,
-        envelope: InternalCallEnvelope,
-        package: Any,
-        data: Mapping[str, Any],
-        publish_time: datetime | None,
-    ) -> tuple[RawItem, EvidenceItem]:
-        source = _clean_key_value(data.get("source")) or _clean_key_value(_value(package, "source")) or "unknown"
-        source_type = _clean_key_value(data.get("source_type")) or _clean_key_value(
-            _value(package, "source_type")
-        )
-        target = _value(package, "target")
-        ticker = _clean_key_value(data.get("ticker")) or _target_ticker(target)
-        entity_ids = _item_entity_ids(data, target)
-        fetched_at = (
-            _parse_datetime(data.get("fetched_at"))
-            or _parse_datetime(_value(package, "completed_at"))
-            or _timestamp_for_create(envelope)
-        )
-        raw_ref = self._next_id("raw")
-        evidence_id = self._next_id("ev")
-        raw_item = RawItem(
-            raw_ref=raw_ref,
-            source=source,
-            source_type=source_type,
-            ticker=ticker,
-            entity_ids=tuple(entity_ids),
-            title=_clean_key_value(data.get("title")),
-            content=_clean_key_value(data.get("content")),
-            content_preview=_clean_key_value(data.get("content_preview") or data.get("snippet")),
-            url=_clean_key_value(data.get("url")),
-            publish_time=publish_time,
-            fetched_at=fetched_at,
-            author=_clean_key_value(data.get("author")),
-            language=_clean_key_value(data.get("language")),
-            raw_payload=dict(data.get("raw_payload") or {}),
-            ingest_context=_ingest_context(
-                envelope,
-                task_id=_clean_key_value(_value(package, "task_id")),
-            ),
-        )
-        evidence_item = EvidenceItem(
-            evidence_id=evidence_id,
-            raw_ref=raw_ref,
-            ticker=ticker,
-            entity_ids=tuple(entity_ids),
-            source=source,
-            source_type=source_type,
-            evidence_type=_evidence_type(data, package, source_type),
-            title=raw_item.title,
-            content=raw_item.content or raw_item.content_preview or raw_item.title,
-            url=raw_item.url,
-            publish_time=publish_time,
-            fetched_at=fetched_at,
-            source_quality=_as_float(data.get("source_quality") or data.get("source_quality_hint")),
-            relevance=_as_float(data.get("relevance")),
-            freshness=_as_float(data.get("freshness"))
-            if data.get("freshness") is not None
-            else _freshness(publish_time, envelope.analysis_time),
-            quality_notes=tuple(_clean_sequence(data.get("quality_notes"))),
-        )
-        return raw_item, evidence_item
 
     def _build_raw_and_evidence_from_draft(
         self,
@@ -599,95 +530,25 @@ class InMemoryEvidenceStoreClient:
             else:
                 self._seen_item_keys.add(key)
 
+    def _index_evidence_entities(self, item: EvidenceItem) -> None:
+        for entity_id in item.entity_ids:
+            self._evidence_entities.setdefault(entity_id, set()).add(item.evidence_id)
+
+    def _matching_evidence_ids_for_entities(self, entity_ids: Sequence[str]) -> set[str] | None:
+        requested = _clean_sequence(entity_ids)
+        if not requested:
+            return None
+        result: set[str] = set()
+        for entity_id in requested:
+            result.update(self._evidence_entities.get(entity_id, set()))
+        return result
+
 
 class FakeEvidenceStoreClient(InMemoryEvidenceStoreClient):
     """Backward-compatible name used by Search Agent contract tests."""
 
 
 EvidenceStore = InMemoryEvidenceStoreClient
-
-
-def _iter_package_items(package: Any) -> list[Any]:
-    if package is None:
-        return []
-    if isinstance(package, Mapping):
-        for key in ("items", "results", "search_results"):
-            value = package.get(key)
-            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-                return list(value)
-        return [package]
-    if isinstance(package, Sequence) and not isinstance(package, (str, bytes, bytearray)):
-        return list(package)
-    for attr in ("items", "results", "search_results"):
-        value = getattr(package, attr, None)
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            return list(value)
-    return [package]
-
-
-def _item_dedupe_key(data: Mapping[str, Any], package: Any) -> str | None:
-    source = _item_source(data, package)
-    url = _clean_key_value(data.get("url"))
-    if url is not None:
-        return f"source:{source}:url:{url}"
-    external_id = _clean_key_value(data.get("external_id"))
-    if external_id is not None:
-        return f"source:{source}:external_id:{external_id}"
-    return None
-
-
-def _content_dedupe_key(data: Mapping[str, Any], package: Any) -> str | None:
-    content = _clean_key_value(data.get("content"))
-    if content is None:
-        return None
-    target = _value(package, "target")
-    ticker = _clean_key_value(data.get("ticker")) or _target_ticker(target) or "unknown"
-    entities = ",".join(_item_entity_ids(data, target))
-    publish_time = _clean_key_value(data.get("publish_time") or data.get("published_at")) or "unknown"
-    digest = sha256(content.encode("utf-8")).hexdigest()
-    return f"content:{ticker}:{entities}:{publish_time}:{digest}"
-
-
-def _item_source(data: Mapping[str, Any], package: Any) -> str:
-    return (
-        _clean_key_value(data.get("source"))
-        or _clean_key_value(_value(package, "source"))
-        or "unknown"
-    )
-
-
-def _evidence_type(
-    data: Mapping[str, Any],
-    package: Any,
-    source_type: str | None,
-) -> str:
-    metadata = _to_mapping(data.get("metadata") or {})
-    package_metadata = _to_mapping(_value(package, "metadata", {}) or {})
-    return (
-        _clean_key_value(data.get("evidence_type"))
-        or _clean_key_value(metadata.get("evidence_type"))
-        or _clean_key_value(package_metadata.get("evidence_type"))
-        or _clean_key_value(source_type)
-        or "unknown"
-    )
-
-
-def _item_entity_ids(data: Mapping[str, Any], target: Any) -> list[str]:
-    values = _clean_sequence(data.get("entity_ids"))
-    target_entity = _clean_key_value(_value(target, "entity_id"))
-    if target_entity is not None and target_entity not in values:
-        values.append(target_entity)
-    return values
-
-
-def _target_ticker(target: Any) -> str | None:
-    ticker = _clean_key_value(_value(target, "ticker"))
-    if ticker is not None:
-        return ticker
-    stock_code = _clean_key_value(_value(target, "stock_code"))
-    if stock_code is None:
-        return None
-    return stock_code.split(".", 1)[0]
 
 
 def _matches_workflow_run_id(
@@ -710,6 +571,27 @@ def _ingest_context(envelope: InternalCallEnvelope, *, task_id: str | None) -> d
         "requested_by": envelope.requested_by,
         "correlation_id": envelope.correlation_id,
     }
+
+
+def _prepare_market_snapshot_for_save(
+    envelope: InternalCallEnvelope,
+    snapshot: MarketSnapshotDraft | Mapping[str, Any],
+) -> tuple[MarketSnapshotDraft, datetime, datetime]:
+    violation_path = _find_forbidden_key(snapshot)
+    if violation_path is not None:
+        raise ValueError(
+            f"write_boundary_violation: directional field is not allowed in MarketSnapshot: {violation_path}"
+        )
+    draft = _coerce_dataclass(MarketSnapshotDraft, snapshot)
+    if draft.snapshot_type not in _ALLOWED_SNAPSHOT_TYPES:
+        raise ValueError(f"invalid_snapshot_type: {draft.snapshot_type}")
+    snapshot_time = _parse_datetime(draft.snapshot_time)
+    if snapshot_time is None:
+        raise ValueError("snapshot_time is required")
+    if _datetime_after(snapshot_time, envelope.analysis_time):
+        raise ValueError("snapshot_time cannot be after envelope.analysis_time")
+    fetched_at = _parse_datetime(draft.fetched_at) or _timestamp_for_create(envelope)
+    return draft, snapshot_time, fetched_at
 
 
 def _rejected(external_id: str | None, reason: str, message: str) -> IngestRejectedItem:
@@ -850,26 +732,6 @@ def _comparable_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
-
-
-def _freshness(publish_time: datetime | None, analysis_time: datetime | None) -> float | None:
-    if publish_time is None or analysis_time is None:
-        return None
-    delta_days = (
-        _comparable_datetime(analysis_time) - _comparable_datetime(publish_time)
-    ).total_seconds() / 86400
-    if delta_days < 0:
-        return 0.0
-    return max(0.0, min(1.0, 1.0 - delta_days / 365.0))
-
-
-def _as_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _as_int(value: Any) -> int | None:

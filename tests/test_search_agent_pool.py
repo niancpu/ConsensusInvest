@@ -508,6 +508,52 @@ class SearchAgentPoolContractTests(unittest.TestCase):
         self.assertTrue(_get_value(status, "completed_at"))
         self.assertIn("exa unavailable", _get_value(status, "last_error", ""))
 
+    def test_waiting_status_persists_without_completed_at_and_restores_idempotency(self):
+        evidence_store = RecordingEvidenceStore()
+        provider = FakeProvider("tavily")
+        pool = self.make_pool([provider], evidence_store)
+        envelope = self.make_envelope(idempotency_key="search_waiting_key")
+        task = self.make_task(sources=["tavily"], idempotency_key="search_waiting_key")
+        status_enum = self.search_models.SearchTaskStatus
+
+        receipt = pool.submit(envelope, task)
+        task_id = _get_value(receipt, "task_id")
+        pool.repository.update_task_status(task_id, status_enum.WAITING)
+
+        status = pool.get_status(envelope, task_id)
+        restored_receipt = pool.submit(envelope, deepcopy(task))
+
+        self.assert_task_status(status, "waiting")
+        self.assertIsNone(_get_value(status, "completed_at"))
+        self.assertEqual(task_id, _get_value(restored_receipt, "task_id"))
+        self.assertEqual("waiting", _status_name(_get_value(restored_receipt, "status")))
+        self.assertEqual([], provider.search_calls)
+        self.assertEqual([], evidence_store.ingest_calls)
+
+    def test_cancelled_status_persists_completed_at_and_is_not_executed(self):
+        evidence_store = RecordingEvidenceStore()
+        provider = FakeProvider("tavily")
+        pool = self.make_pool([provider], evidence_store)
+        envelope = self.make_envelope(idempotency_key="search_cancelled_key")
+        task = self.make_task(sources=["tavily"], idempotency_key="search_cancelled_key")
+        status_enum = self.search_models.SearchTaskStatus
+
+        receipt = pool.submit(envelope, task)
+        task_id = _get_value(receipt, "task_id")
+        pool.repository.update_task_status(task_id, status_enum.CANCELLED)
+
+        executed_task_ids = pool.run_pending_once()
+        status = pool.get_status(envelope, task_id)
+        restored_receipt = pool.submit(envelope, deepcopy(task))
+
+        self.assertEqual([], executed_task_ids)
+        self.assert_task_status(status, "cancelled")
+        self.assertTrue(_get_value(status, "completed_at"))
+        self.assertEqual(task_id, _get_value(restored_receipt, "task_id"))
+        self.assertEqual("cancelled", _status_name(_get_value(restored_receipt, "status")))
+        self.assertEqual([], provider.search_calls)
+        self.assertEqual([], evidence_store.ingest_calls)
+
     def test_pool_consumes_evidence_store_ingest_result_without_exposing_ids(self):
         evidence_store = self.evidence_client_module.FakeEvidenceStoreClient()
         pool = self.make_pool([FakeProvider("tavily")], evidence_store)

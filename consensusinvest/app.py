@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 
 from consensusinvest.agent_swarm.router import router as agent_swarm_router
@@ -15,6 +17,10 @@ from .common.errors import install_error_handlers
 from .report_module.router import router as report_module_router
 
 
+def _env_bool(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ConsensusInvest API",
@@ -24,7 +30,7 @@ def create_app() -> FastAPI:
             "This server currently exposes the Report Module view APIs (docs/report_module)."
         ),
     )
-    app.state.runtime = build_runtime(seed_demo_data=True)
+    app.state.runtime = build_runtime(seed_demo_data=_env_bool("CONSENSUSINVEST_SEED_DEMO_DATA"))
     install_error_handlers(app)
     app.include_router(workflow_router)
     app.include_router(evidence_router)

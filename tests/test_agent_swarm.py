@@ -256,6 +256,53 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual(("ev_000002",), judgment.key_negative_evidence_ids)
         self.assertEqual(("arg_000001",), judgment.referenced_agent_argument_ids)
         self.assertEqual("LLM judgment grounded in saved arguments and Evidence.", judgment.reasoning)
+        judge_call = llm.calls[-1]
+        self.assertEqual("judge", judge_call["purpose"])
+        self.assertEqual(
+            list(swarm_outcome.round_summary_ids),
+            judge_call["user_payload"]["round_summary_ids"],
+        )
+        self.assertEqual(
+            list(swarm_outcome.round_summary_ids),
+            [
+                summary["round_summary_id"]
+                for summary in judge_call["user_payload"]["round_summaries"]
+            ],
+        )
+
+    def test_judge_returns_insufficient_evidence_when_round_summary_missing(self):
+        store = self.make_store()
+        envelope = self.make_envelope(idempotency_key="run_swarm_for_missing_summary")
+        swarm = AgentSwarmRuntime(evidence_store=store)
+        swarm_outcome = swarm.run(
+            envelope,
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": ["ev_000001", "ev_000002"]},
+            },
+        )
+        judge = JudgeRuntime(evidence_store=store, repository=swarm.repository)
+
+        outcome = judge.run(
+            self.make_envelope(idempotency_key="run_judge_missing_summary"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "round_summary_ids": [
+                    swarm_outcome.round_summary_ids[0],
+                    "rsum_missing_001",
+                ],
+                "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                "key_evidence_ids": ["ev_000001", "ev_000002"],
+            },
+        )
+
+        self.assertEqual("insufficient_evidence", outcome.status)
+        self.assertIsNone(outcome.judgment_id)
+        self.assertEqual("missing_round_summaries", outcome.gaps[0].gap_type)
+        self.assertIn("rsum_missing_001", outcome.gaps[0].description)
 
 
 if __name__ == "__main__":

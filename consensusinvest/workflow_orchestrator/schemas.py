@@ -160,6 +160,16 @@ class JudgmentSnapshotView(WorkflowModel):
     created_at: str | None = None
 
 
+class JudgeToolCallSnapshotView(WorkflowModel):
+    tool_call_id: str
+    judgment_id: str
+    tool_name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+    output_summary: str
+    referenced_evidence_ids: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+
+
 class WorkflowSnapshotRunView(WorkflowModel):
     workflow_run_id: str
     ticker: str
@@ -174,6 +184,7 @@ class WorkflowSnapshotView(WorkflowModel):
     agent_arguments: list[AgentArgumentSnapshotView] = Field(default_factory=list)
     round_summaries: list[RoundSummarySnapshotView] = Field(default_factory=list)
     judgment: JudgmentSnapshotView | None = None
+    judge_tool_calls: list[JudgeToolCallSnapshotView] = Field(default_factory=list)
     last_event_sequence: int
     events: list["WorkflowEventView"] | None = None
 

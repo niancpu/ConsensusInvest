@@ -162,6 +162,13 @@ class WorkflowOrchestrator:
             return self._mark_failed(run, "missing_judgment", "Judge completed without saved judgment.")
 
         completed_at = judgment.created_at or _timestamp(run.analysis_time)
+        for tool_call in self.agent_swarm.repository.list_tool_calls(judgment.judgment_id):
+            self.repository.append_event(
+                workflow_run_id,
+                "judge_tool_call_completed",
+                _judge_tool_call_payload(tool_call),
+                created_at=tool_call.created_at or completed_at,
+            )
         self.repository.append_event(
             workflow_run_id,
             "judgment_completed",
@@ -209,6 +216,11 @@ class WorkflowOrchestrator:
         run = self._required_run(workflow_run_id)
         evidence = self._query_evidence(run, limit=max_evidence)
         judgment = self.agent_swarm.repository.get_judgment_by_workflow(workflow_run_id)
+        judge_tool_calls = (
+            self.agent_swarm.repository.list_tool_calls(judgment.judgment_id)
+            if judgment is not None
+            else []
+        )
         data: dict[str, Any] = {
             "workflow_run": run,
             "evidence_items": evidence,
@@ -216,6 +228,7 @@ class WorkflowOrchestrator:
             "agent_arguments": self.agent_swarm.repository.list_arguments(workflow_run_id)[:max_arguments],
             "round_summaries": self.agent_swarm.repository.list_round_summaries(workflow_run_id),
             "judgment": judgment,
+            "judge_tool_calls": judge_tool_calls,
             "last_event_sequence": self.repository.last_event_sequence(workflow_run_id),
         }
         if include_events:
@@ -480,6 +493,17 @@ def _to_plain(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_to_plain(child) for child in value]
     return value
+
+
+def _judge_tool_call_payload(tool_call: Any) -> dict[str, Any]:
+    return {
+        "tool_call_id": tool_call.tool_call_id,
+        "judgment_id": tool_call.judgment_id,
+        "tool_name": tool_call.tool_name,
+        "input": _to_plain(dict(tool_call.input)),
+        "output_summary": tool_call.output_summary,
+        "referenced_evidence_ids": list(tool_call.referenced_evidence_ids),
+    }
 
 
 __all__ = ["WorkflowOrchestrator"]

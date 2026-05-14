@@ -115,6 +115,7 @@ class SQLiteSearchTaskRepository:
                 SearchTaskStatus.COMPLETED,
                 SearchTaskStatus.PARTIAL_COMPLETED,
                 SearchTaskStatus.FAILED,
+                SearchTaskStatus.CANCELLED,
             ):
                 self._connection.execute(
                     """
