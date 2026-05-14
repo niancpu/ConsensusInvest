@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from consensusinvest.evidence_normalizer.service import EvidenceNormalizer
+from consensusinvest.evidence_normalizer.models import NormalizedEvidenceDraft
 from consensusinvest.evidence_store.client import (
     _ALLOWED_REFERENCE_ROLES,
     _ALLOWED_SNAPSHOT_TYPES,
@@ -72,6 +74,7 @@ class SQLiteEvidenceStoreClient:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self.normalizer = EvidenceNormalizer()
         self._ensure_schema()
 
     def close(self) -> None:
@@ -87,62 +90,15 @@ class SQLiteEvidenceStoreClient:
         created_evidence_ids: list[str] = []
         rejected_items: list[IngestRejectedItem] = []
 
-        for item in _iter_package_items(package):
-            data = _to_mapping(item)
-            external_id = _clean_key_value(data.get("external_id"))
-            violation_path = _find_forbidden_key(
-                data,
-                skip_keys={"raw_payload", "provider_response"},
-            )
-            if violation_path is not None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "write_boundary_violation",
-                        f"directional field is not allowed in Evidence: {violation_path}",
-                    )
-                )
-                continue
+        normalized = self.normalizer.normalize_search_result(envelope, package)
+        rejected_items.extend(normalized.rejected_items)
 
-            publish_time = _parse_datetime(
-                data.get("publish_time") or data.get("published_at")
-            )
-            if (data.get("publish_time") or data.get("published_at")) and publish_time is None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "invalid_request",
-                        "publish_time must be an ISO datetime when provided",
-                    )
-                )
-                continue
-            if _datetime_after(publish_time, envelope.analysis_time):
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "publish_time_after_analysis_time",
-                        "item publish_time is later than envelope.analysis_time",
-                    )
-                )
-                continue
-
-            primary_item_key = _item_dedupe_key(data, package)
-            if primary_item_key is None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "invalid_request",
-                        "search result item must include url or external_id",
-                    )
-                )
-                continue
-            item_keys = _dedupe_keys(data, package, primary_item_key)
-
-            duplicate_key = self._existing_dedupe_key(item_keys)
+        for draft in normalized.drafts:
+            duplicate_key = self._existing_dedupe_key(list(draft.dedupe_keys))
             if duplicate_key is not None:
                 rejected_items.append(
                     IngestRejectedItem(
-                        external_id=external_id,
+                        external_id=draft.external_id,
                         reason="duplicate_request",
                         message="search result item was already ingested",
                         item_key=duplicate_key,
@@ -152,17 +108,16 @@ class SQLiteEvidenceStoreClient:
                 )
                 continue
 
-            raw_item, evidence_item = self._build_raw_and_evidence(
+            raw_item, evidence_item = self._build_raw_and_evidence_from_draft(
                 envelope,
                 package,
-                data,
-                publish_time,
+                draft,
             )
             try:
                 with self._conn:
                     self._insert_raw(raw_item)
                     self._insert_evidence(evidence_item)
-                    for item_key in item_keys:
+                    for item_key in draft.dedupe_keys:
                         self._insert_dedupe_key(
                             item_key,
                             raw_item.raw_ref,
@@ -171,10 +126,10 @@ class SQLiteEvidenceStoreClient:
             except sqlite3.IntegrityError:
                 rejected_items.append(
                     IngestRejectedItem(
-                        external_id=external_id,
+                        external_id=draft.external_id,
                         reason="duplicate_request",
                         message="search result item was already ingested",
-                        item_key=item_keys[0],
+                        item_key=draft.dedupe_keys[0] if draft.dedupe_keys else None,
                         code="duplicate_request",
                         retryable=True,
                     )
@@ -667,6 +622,54 @@ class SQLiteEvidenceStoreClient:
             if data.get("freshness") is not None
             else _freshness(publish_time, envelope.analysis_time),
             quality_notes=tuple(_clean_sequence(data.get("quality_notes"))),
+        )
+        return raw_item, evidence_item
+
+    def _build_raw_and_evidence_from_draft(
+        self,
+        envelope: InternalCallEnvelope,
+        package: Any,
+        draft: NormalizedEvidenceDraft,
+    ) -> tuple[RawItem, EvidenceItem]:
+        raw_ref = self._next_id("raw")
+        evidence_id = self._next_id("ev")
+        raw_item = RawItem(
+            raw_ref=raw_ref,
+            source=draft.raw.source,
+            source_type=draft.raw.source_type,
+            ticker=draft.raw.ticker,
+            entity_ids=draft.raw.entity_ids,
+            title=draft.raw.title,
+            content=draft.raw.content,
+            content_preview=draft.raw.content_preview,
+            url=draft.raw.url,
+            publish_time=draft.raw.publish_time,
+            fetched_at=draft.raw.fetched_at,
+            author=draft.raw.author,
+            language=draft.raw.language,
+            raw_payload=dict(draft.raw.raw_payload),
+            ingest_context=_ingest_context(
+                envelope,
+                task_id=_clean_key_value(_value(package, "task_id")),
+            ),
+        )
+        evidence_item = EvidenceItem(
+            evidence_id=evidence_id,
+            raw_ref=raw_ref,
+            ticker=draft.evidence.ticker,
+            entity_ids=draft.evidence.entity_ids,
+            source=draft.evidence.source,
+            source_type=draft.evidence.source_type,
+            evidence_type=draft.evidence.evidence_type,
+            title=draft.evidence.title,
+            content=draft.evidence.content,
+            url=draft.evidence.url,
+            publish_time=draft.evidence.publish_time,
+            fetched_at=draft.evidence.fetched_at,
+            source_quality=draft.evidence.source_quality,
+            relevance=draft.evidence.relevance,
+            freshness=draft.evidence.freshness,
+            quality_notes=draft.evidence.quality_notes,
         )
         return raw_item, evidence_item
 

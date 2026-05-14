@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any, Protocol, TypeVar
 
+from consensusinvest.evidence_normalizer.service import EvidenceNormalizer
+from consensusinvest.evidence_normalizer.models import NormalizedEvidenceDraft
 from consensusinvest.evidence_store.models import (
     EvidenceDetail,
     EvidenceItem,
@@ -151,6 +153,7 @@ class InMemoryEvidenceStoreClient:
         self._next_structure_id = 1
         self._next_reference_id = 1
         self._next_market_snapshot_id = 1
+        self.normalizer = EvidenceNormalizer()
 
     def ingest_search_result(
         self,
@@ -165,66 +168,15 @@ class InMemoryEvidenceStoreClient:
         created_evidence_ids: list[str] = []
         rejected_items: list[IngestRejectedItem] = []
 
-        for item in _iter_package_items(package):
-            data = _to_mapping(item)
-            external_id = _clean_key_value(data.get("external_id"))
-            violation_path = _find_forbidden_key(
-                data,
-                skip_keys={"raw_payload", "provider_response"},
-            )
-            if violation_path is not None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "write_boundary_violation",
-                        f"directional field is not allowed in Evidence: {violation_path}",
-                    )
-                )
-                continue
+        normalized = self.normalizer.normalize_search_result(envelope, package)
+        rejected_items.extend(normalized.rejected_items)
 
-            publish_time = _parse_datetime(
-                data.get("publish_time") or data.get("published_at")
-            )
-            if (data.get("publish_time") or data.get("published_at")) and publish_time is None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "invalid_request",
-                        "publish_time must be an ISO datetime when provided",
-                    )
-                )
-                continue
-            if _datetime_after(publish_time, envelope.analysis_time):
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "publish_time_after_analysis_time",
-                        "item publish_time is later than envelope.analysis_time",
-                    )
-                )
-                continue
-
-            item_key = _item_dedupe_key(data, package)
-            if item_key is None:
-                rejected_items.append(
-                    _rejected(
-                        external_id,
-                        "invalid_request",
-                        "search result item must include url or external_id",
-                    )
-                )
-                continue
-
-            content_key = _content_dedupe_key(data, package)
-            duplicate_key = None
-            if item_key in self._seen_item_keys:
-                duplicate_key = item_key
-            elif content_key is not None and content_key in self._seen_content_keys:
-                duplicate_key = content_key
+        for draft in normalized.drafts:
+            duplicate_key = self._existing_dedupe_key(draft.dedupe_keys)
             if duplicate_key is not None:
                 rejected_items.append(
                     IngestRejectedItem(
-                        external_id=external_id,
+                        external_id=draft.external_id,
                         reason="duplicate_request",
                         message="search result item was already ingested",
                         item_key=duplicate_key,
@@ -234,18 +186,15 @@ class InMemoryEvidenceStoreClient:
                 )
                 continue
 
-            raw_item, evidence_item = self._build_raw_and_evidence(
+            raw_item, evidence_item = self._build_raw_and_evidence_from_draft(
                 envelope,
                 package,
-                data,
-                publish_time,
+                draft,
             )
             self._raw_items[raw_item.raw_ref] = raw_item
             self._evidence_items[evidence_item.evidence_id] = evidence_item
             self._evidence_by_raw_ref[raw_item.raw_ref] = evidence_item.evidence_id
-            self._seen_item_keys.add(item_key)
-            if content_key is not None:
-                self._seen_content_keys.add(content_key)
+            self._remember_dedupe_keys(draft.dedupe_keys)
 
             accepted_raw_refs.append(raw_item.raw_ref)
             created_evidence_ids.append(evidence_item.evidence_id)
@@ -569,6 +518,54 @@ class InMemoryEvidenceStoreClient:
         )
         return raw_item, evidence_item
 
+    def _build_raw_and_evidence_from_draft(
+        self,
+        envelope: InternalCallEnvelope,
+        package: Any,
+        draft: NormalizedEvidenceDraft,
+    ) -> tuple[RawItem, EvidenceItem]:
+        raw_ref = self._next_id("raw")
+        evidence_id = self._next_id("ev")
+        raw_item = RawItem(
+            raw_ref=raw_ref,
+            source=draft.raw.source,
+            source_type=draft.raw.source_type,
+            ticker=draft.raw.ticker,
+            entity_ids=draft.raw.entity_ids,
+            title=draft.raw.title,
+            content=draft.raw.content,
+            content_preview=draft.raw.content_preview,
+            url=draft.raw.url,
+            publish_time=draft.raw.publish_time,
+            fetched_at=draft.raw.fetched_at,
+            author=draft.raw.author,
+            language=draft.raw.language,
+            raw_payload=dict(draft.raw.raw_payload),
+            ingest_context=_ingest_context(
+                envelope,
+                task_id=_clean_key_value(_value(package, "task_id")),
+            ),
+        )
+        evidence_item = EvidenceItem(
+            evidence_id=evidence_id,
+            raw_ref=raw_ref,
+            ticker=draft.evidence.ticker,
+            entity_ids=draft.evidence.entity_ids,
+            source=draft.evidence.source,
+            source_type=draft.evidence.source_type,
+            evidence_type=draft.evidence.evidence_type,
+            title=draft.evidence.title,
+            content=draft.evidence.content,
+            url=draft.evidence.url,
+            publish_time=draft.evidence.publish_time,
+            fetched_at=draft.evidence.fetched_at,
+            source_quality=draft.evidence.source_quality,
+            relevance=draft.evidence.relevance,
+            freshness=draft.evidence.freshness,
+            quality_notes=draft.evidence.quality_notes,
+        )
+        return raw_item, evidence_item
+
     def _next_id(self, prefix: str) -> str:
         if prefix == "raw":
             value = self._next_raw_id
@@ -588,6 +585,19 @@ class InMemoryEvidenceStoreClient:
         else:
             raise ValueError(f"unknown id prefix: {prefix}")
         return f"{prefix}_{value:06d}"
+
+    def _existing_dedupe_key(self, item_keys: tuple[str, ...]) -> str | None:
+        for key in item_keys:
+            if key in self._seen_item_keys or key in self._seen_content_keys:
+                return key
+        return None
+
+    def _remember_dedupe_keys(self, item_keys: tuple[str, ...]) -> None:
+        for key in item_keys:
+            if key.startswith("content:"):
+                self._seen_content_keys.add(key)
+            else:
+                self._seen_item_keys.add(key)
 
 
 class FakeEvidenceStoreClient(InMemoryEvidenceStoreClient):
