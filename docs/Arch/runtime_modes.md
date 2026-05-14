@@ -28,6 +28,8 @@ Create workflow_run
 - 创建 `workflow_run_id`。
 - 写 `workflow_runs`、`agent_runs`、`agent_arguments`、`round_summaries`、`judgments`。
 - 所有重要论点写 `evidence_references`。
+- `workflow_runs` 是主 workflow 运行态事实来源，不能只保存在 Orchestrator 内存中。
+- Agent 执行状态写 `agent_runs`；Agent 输出的论点和 Judge 输出分别写入对应产物表。
 
 边界：
 
@@ -58,6 +60,7 @@ Create report_run
 - 创建 `report_run_id`。
 - `judgment_id` 必须为空。
 - 输出必须带 `trace_refs.evidence_ids` / `trace_refs.market_snapshot_ids`，并说明没有主 workflow 判断链。
+- `report_runs` 是报告生成运行态事实来源；报告视图缓存不能替代 `report_run_id`。
 
 边界：
 
@@ -104,6 +107,8 @@ Agent Swarm / Judge finds EvidenceGap
 - 可以有 `workflow_run_id`，也可以没有。
 - 必须有 `correlation_id`。
 - SearchTask 完成不直接生成报告或判断，只生成可被后续消费的 Raw/Evidence。
+- `search_tasks` 是异步补齐运行态事实来源。创建补齐任务时必须先持久化任务，再返回 `task_id` 或 `refresh_task_id`。
+- 内存 worker、事件流和前端连接只负责执行与观察，不能替代 `search_tasks` 的状态记录。
 
 边界：
 

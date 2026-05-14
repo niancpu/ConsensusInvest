@@ -7,10 +7,12 @@
 - 实现 Raw/Evidence/Structure 基础表。
 - 实现 Evidence 查询和 Raw 回查。
 - 优先接入 AkShare 或一个稳定数据源。
+- 建立运行态持久化基础约束：创建类接口先写运行表，再返回 ID。
 
 ## Phase 2：Search Agent Pool
 
 - 定义 SearchTask。
+- 实现 `search_tasks` 持久化状态、幂等键、错误和部分完成状态。
 - 实现可并发 source worker。
 - 输出 SearchResultPackage。
 - 接入 Evidence Store ingest。
@@ -27,6 +29,7 @@
 
 - 实现 Report Module 读 Evidence Store 的报告视图。
 - 支持 `report_run_id`。
+- 持久化 `report_runs`，记录报告生成状态、完整输入输出快照和限制说明。
 - 支持 `workflow_run_id=null`。
 - 支持 `refresh_policy` 触发异步补齐。
 - 明确展示没有主 workflow 判断链的限制。
@@ -35,6 +38,7 @@
 ## Phase 5：主 workflow MVP
 
 - 定义 workflow config。
+- 持久化 `workflow_runs`、`agent_runs`、`runtime_events`、`judge_tool_calls` 和错误状态。
 - 实现 `bull_v1`。
 - 保存 Agent Argument 和 Evidence Reference。
 - 实现 Round Summary。

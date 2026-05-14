@@ -2,7 +2,7 @@
 
 Agent Swarm 是主 workflow 的推理模块。它消费 Evidence Store 中的 Evidence 和 Structure，生成可追踪论证。Judge Runtime 基于这些论证和 Evidence 生成最终判断。
 
-Agent 类任务共享 `AgentRuntime` 运行层，用于处理任务生命周期、状态、事件、预算、错误和 trace。`AgentRuntime` 不定义业务输入输出；Search Agent、Debate Agent、Judge Agent 不能因为共享运行层而共享事实生产权或搜索权限。
+Agent 类任务共享 `AgentRuntime` 运行层，用于处理任务生命周期、状态、事件、预算、错误和 trace。`AgentRuntime` 第一版写统一事件日志 `runtime_events`，用于记录 Agent 类任务时间线、状态变化、工具调用摘要和错误事件。`AgentRuntime` 不定义业务输入输出；Search Agent、Debate Agent、Judge Agent 不能因为共享运行层而共享事实生产权或搜索权限。
 
 ## 1. Agent 输入
 

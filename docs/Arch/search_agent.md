@@ -60,6 +60,8 @@ Search Agent 拥有：
 - provider 调用错误；
 - SearchResultPackage 临时输出。
 
+MVP 中，SearchTask 运行状态必须持久化到 `search_tasks`。worker 状态可以在内存中执行，但已返回的 `task_id`、幂等键、阶段状态、错误和部分完成结果必须能通过持久表恢复。
+
 Search Agent 不拥有：
 
 - Raw Item；
@@ -93,6 +95,5 @@ Agent Swarm / Judge
 
 ## 7. 未决问题
 
-- 第一版任务状态是否落 SQLite 表。
 - 是否为 Search Agent 提供独立事件流，还是统一接入 workflow/report 事件系统。
 - MarketSnapshot 第一版由 Evidence Store 管理为独立事实类型；Search Agent 可以触发采集，但不能把它当成投资判断。
