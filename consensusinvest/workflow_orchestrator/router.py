@@ -6,16 +6,14 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 
-from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime, InMemoryAgentSwarmRepository
 from consensusinvest.common.errors import NotFoundError
 from consensusinvest.common.response import ListPagination, ListResponse, SingleResponse
-from consensusinvest.evidence_store import FakeEvidenceStoreClient
+from consensusinvest.runtime.wiring import AppRuntime
 
 from .models import WorkflowOptions, WorkflowQuery, WorkflowRunCreate, WorkflowRunRecord
-from .repository import InMemoryWorkflowRepository
 from .schemas import (
     AgentArgumentSnapshotView,
     AgentRunSnapshotView,
@@ -39,20 +37,17 @@ from .service import WorkflowOrchestrator
 
 router = APIRouter(prefix="/api/v1", tags=["workflow"])
 
-_evidence_store = FakeEvidenceStoreClient()
-_agent_repository = InMemoryAgentSwarmRepository()
-_agent_swarm = AgentSwarmRuntime(evidence_store=_evidence_store, repository=_agent_repository)
-_judge = JudgeRuntime(evidence_store=_evidence_store, repository=_agent_repository)
-service = WorkflowOrchestrator(
-    repository=InMemoryWorkflowRepository(),
-    evidence_store=_evidence_store,
-    agent_swarm=_agent_swarm,
-    judge=_judge,
-)
+
+def get_workflow_service(request: Request) -> WorkflowOrchestrator:
+    runtime: AppRuntime = request.app.state.runtime
+    return runtime.workflow_service
 
 
 @router.post("/workflow-runs", status_code=202, response_model=SingleResponse[WorkflowRunCreateView])
-def create_workflow_run(request: WorkflowRunCreateRequest) -> SingleResponse[WorkflowRunCreateView]:
+def create_workflow_run(
+    request: WorkflowRunCreateRequest,
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
+) -> SingleResponse[WorkflowRunCreateView]:
     run = service.create_run(
         WorkflowRunCreate(
             ticker=request.ticker,
@@ -82,6 +77,7 @@ def list_workflow_runs(
     status: str | None = Query(None),
     limit: int = Query(20, ge=0, le=100),
     offset: int = Query(0, ge=0),
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
 ) -> ListResponse[WorkflowRunListItemView]:
     rows, total = service.list_runs(ticker=ticker, status=status, limit=limit, offset=offset)
     return ListResponse(
@@ -96,8 +92,11 @@ def list_workflow_runs(
 
 
 @router.get("/workflow-runs/{workflow_run_id}", response_model=SingleResponse[WorkflowRunDetailView])
-def get_workflow_run(workflow_run_id: str) -> SingleResponse[WorkflowRunDetailView]:
-    run = _required_run(workflow_run_id)
+def get_workflow_run(
+    workflow_run_id: str,
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
+) -> SingleResponse[WorkflowRunDetailView]:
+    run = _required_run(service, workflow_run_id)
     return SingleResponse(data=_detail_view(run))
 
 
@@ -108,6 +107,7 @@ def get_workflow_snapshot(
     include_events: bool = Query(False),
     max_evidence: int = Query(100, ge=0, le=500),
     max_arguments: int = Query(100, ge=0, le=500),
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
 ) -> SingleResponse[WorkflowSnapshotView]:
     del include_raw_payload
     try:
@@ -123,8 +123,11 @@ def get_workflow_snapshot(
 
 
 @router.get("/workflow-runs/{workflow_run_id}/trace", response_model=SingleResponse[WorkflowTraceView])
-def get_workflow_trace(workflow_run_id: str) -> SingleResponse[WorkflowTraceView]:
-    run = _required_run(workflow_run_id)
+def get_workflow_trace(
+    workflow_run_id: str,
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
+) -> SingleResponse[WorkflowTraceView]:
+    run = _required_run(service, workflow_run_id)
     nodes, edges = service.trace(workflow_run_id)
     return SingleResponse(
         data=WorkflowTraceView(
@@ -156,8 +159,9 @@ def stream_workflow_events(
     workflow_run_id: str,
     after_sequence: int | None = Query(None),
     include_snapshot: bool = Query(False),
+    service: WorkflowOrchestrator = Depends(get_workflow_service),
 ) -> StreamingResponse:
-    _required_run(workflow_run_id)
+    _required_run(service, workflow_run_id)
 
     def iter_events() -> Any:
         if include_snapshot:
@@ -177,7 +181,7 @@ def stream_workflow_events(
     return StreamingResponse(iter_events(), media_type="text/event-stream")
 
 
-def _required_run(workflow_run_id: str) -> WorkflowRunRecord:
+def _required_run(service: WorkflowOrchestrator, workflow_run_id: str) -> WorkflowRunRecord:
     run = service.get_run(workflow_run_id)
     if run is None:
         raise _not_found(workflow_run_id)

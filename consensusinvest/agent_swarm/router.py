@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from consensusinvest.common.errors import NotFoundError
 from consensusinvest.common.response import ListPagination, ListResponse, SingleResponse
+from consensusinvest.runtime.wiring import AppRuntime
 
 from .models import (
     AgentArgumentRecord,
@@ -16,7 +17,7 @@ from .models import (
     JudgmentRecord,
     RoundSummaryRecord,
 )
-from .repository import InMemoryAgentSwarmRepository, seed_demo_repository
+from .repository import InMemoryAgentSwarmRepository
 from .schemas import (
     AgentArgumentView,
     AgentRunView,
@@ -28,14 +29,21 @@ from .schemas import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["agents_judgments"])
-repository: InMemoryAgentSwarmRepository = seed_demo_repository()
+
+
+def get_agent_repository(request: Request) -> InMemoryAgentSwarmRepository:
+    runtime: AppRuntime = request.app.state.runtime
+    return runtime.agent_repository
 
 
 @router.get(
     "/workflow-runs/{workflow_run_id}/agent-runs",
     response_model=ListResponse[AgentRunView],
 )
-def list_agent_runs(workflow_run_id: str) -> ListResponse[AgentRunView]:
+def list_agent_runs(
+    workflow_run_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> ListResponse[AgentRunView]:
     rows = [_agent_run_view(row) for row in repository.list_agent_runs(workflow_run_id)]
     return _list_response(rows)
 
@@ -48,6 +56,7 @@ def list_agent_arguments(
     workflow_run_id: str,
     agent_id: str | None = Query(None),
     round: int | None = Query(None),  # noqa: A002 - field fixed by API contract
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
 ) -> ListResponse[AgentArgumentView]:
     rows = [
         _argument_view(row)
@@ -64,7 +73,10 @@ def list_agent_arguments(
     "/agent-arguments/{agent_argument_id}",
     response_model=SingleResponse[AgentArgumentView],
 )
-def get_agent_argument(agent_argument_id: str) -> SingleResponse[AgentArgumentView]:
+def get_agent_argument(
+    agent_argument_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> SingleResponse[AgentArgumentView]:
     argument = repository.get_argument(agent_argument_id)
     if argument is None:
         raise NotFoundError(
@@ -79,7 +91,10 @@ def get_agent_argument(agent_argument_id: str) -> SingleResponse[AgentArgumentVi
     "/agent-arguments/{agent_argument_id}/references",
     response_model=ListResponse[EvidenceReferenceView],
 )
-def list_agent_argument_references(agent_argument_id: str) -> ListResponse[EvidenceReferenceView]:
+def list_agent_argument_references(
+    agent_argument_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> ListResponse[EvidenceReferenceView]:
     if repository.get_argument(agent_argument_id) is None:
         raise NotFoundError(
             f"Agent argument not found: {agent_argument_id}",
@@ -107,7 +122,10 @@ def list_agent_argument_references(agent_argument_id: str) -> ListResponse[Evide
     "/workflow-runs/{workflow_run_id}/round-summaries",
     response_model=ListResponse[RoundSummaryView],
 )
-def list_round_summaries(workflow_run_id: str) -> ListResponse[RoundSummaryView]:
+def list_round_summaries(
+    workflow_run_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> ListResponse[RoundSummaryView]:
     rows = [_round_summary_view(row) for row in repository.list_round_summaries(workflow_run_id)]
     return _list_response(rows)
 
@@ -116,7 +134,10 @@ def list_round_summaries(workflow_run_id: str) -> ListResponse[RoundSummaryView]
     "/round-summaries/{round_summary_id}",
     response_model=SingleResponse[RoundSummaryView],
 )
-def get_round_summary(round_summary_id: str) -> SingleResponse[RoundSummaryView]:
+def get_round_summary(
+    round_summary_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> SingleResponse[RoundSummaryView]:
     summary = repository.get_round_summary(round_summary_id)
     if summary is None:
         raise NotFoundError(
@@ -131,7 +152,10 @@ def get_round_summary(round_summary_id: str) -> SingleResponse[RoundSummaryView]
     "/workflow-runs/{workflow_run_id}/judgment",
     response_model=SingleResponse[JudgmentView],
 )
-def get_workflow_judgment(workflow_run_id: str) -> SingleResponse[JudgmentView]:
+def get_workflow_judgment(
+    workflow_run_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> SingleResponse[JudgmentView]:
     judgment = repository.get_judgment_by_workflow(workflow_run_id)
     if judgment is None:
         raise NotFoundError(
@@ -139,11 +163,14 @@ def get_workflow_judgment(workflow_run_id: str) -> SingleResponse[JudgmentView]:
             code="JUDGMENT_NOT_FOUND",
             details={"workflow_run_id": workflow_run_id},
         )
-    return SingleResponse(data=_judgment_view(judgment))
+    return SingleResponse(data=_judgment_view(repository, judgment))
 
 
 @router.get("/judgments/{judgment_id}", response_model=SingleResponse[JudgmentView])
-def get_judgment(judgment_id: str) -> SingleResponse[JudgmentView]:
+def get_judgment(
+    judgment_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> SingleResponse[JudgmentView]:
     judgment = repository.get_judgment(judgment_id)
     if judgment is None:
         raise NotFoundError(
@@ -151,14 +178,17 @@ def get_judgment(judgment_id: str) -> SingleResponse[JudgmentView]:
             code="JUDGMENT_NOT_FOUND",
             details={"judgment_id": judgment_id},
         )
-    return SingleResponse(data=_judgment_view(judgment))
+    return SingleResponse(data=_judgment_view(repository, judgment))
 
 
 @router.get(
     "/judgments/{judgment_id}/references",
     response_model=ListResponse[EvidenceReferenceView],
 )
-def list_judgment_references(judgment_id: str) -> ListResponse[EvidenceReferenceView]:
+def list_judgment_references(
+    judgment_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> ListResponse[EvidenceReferenceView]:
     if repository.get_judgment(judgment_id) is None:
         raise NotFoundError(
             f"Judgment not found: {judgment_id}",
@@ -183,7 +213,10 @@ def list_judgment_references(judgment_id: str) -> ListResponse[EvidenceReference
     "/judgments/{judgment_id}/tool-calls",
     response_model=ListResponse[JudgeToolCallView],
 )
-def list_judge_tool_calls(judgment_id: str) -> ListResponse[JudgeToolCallView]:
+def list_judge_tool_calls(
+    judgment_id: str,
+    repository: InMemoryAgentSwarmRepository = Depends(get_agent_repository),
+) -> ListResponse[JudgeToolCallView]:
     if repository.get_judgment(judgment_id) is None:
         raise NotFoundError(
             f"Judgment not found: {judgment_id}",
@@ -246,7 +279,7 @@ def _round_summary_view(row: RoundSummaryRecord) -> RoundSummaryView:
     )
 
 
-def _judgment_view(row: JudgmentRecord) -> JudgmentView:
+def _judgment_view(repository: InMemoryAgentSwarmRepository, row: JudgmentRecord) -> JudgmentView:
     tool_call_count = len(repository.list_tool_calls(row.judgment_id))
     return JudgmentView(
         judgment_id=row.judgment_id,
