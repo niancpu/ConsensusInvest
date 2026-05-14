@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
+from consensusinvest.agent_swarm import (
+    AgentSwarmRuntime,
+    JudgeRuntime,
+    build_agent_llm_provider_from_env,
+)
 from consensusinvest.agent_swarm.repository import (
     InMemoryAgentSwarmRepository,
     seed_demo_repository,
@@ -37,6 +41,7 @@ class AppRuntime:
 
 def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
     load_local_env()
+    llm_provider = build_agent_llm_provider_from_env()
     evidence_store = FakeEvidenceStoreClient()
     entity_repository = seed_entity_repository()
     if seed_demo_data:
@@ -46,10 +51,12 @@ def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
     agent_swarm = AgentSwarmRuntime(
         evidence_store=evidence_store,
         repository=agent_repository,
+        llm_provider=llm_provider,
     )
     judge = JudgeRuntime(
         evidence_store=evidence_store,
         repository=agent_repository,
+        llm_provider=llm_provider,
     )
     search_pool = SearchAgentPool(
         providers=build_real_search_providers_from_env(),

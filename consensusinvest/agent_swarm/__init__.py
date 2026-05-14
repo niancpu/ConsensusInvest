@@ -24,10 +24,16 @@ from consensusinvest.agent_swarm.models import (
     RoundSummaryRecord,
     SuggestedSearch,
 )
+from consensusinvest.agent_swarm.llm import (
+    AgentLLMProvider,
+    LiteLLMAgentProvider,
+    build_agent_llm_provider_from_env,
+)
 from consensusinvest.agent_swarm.repository import InMemoryAgentSwarmRepository
 from consensusinvest.agent_swarm.service import AgentSwarmRuntime, JudgeRuntime
 
 __all__ = [
+    "AgentLLMProvider",
     "AgentArgumentDraft",
     "AgentArgumentRecord",
     "AgentRunRecord",
@@ -47,8 +53,10 @@ __all__ = [
     "JudgeToolAccess",
     "JudgeToolCallRecord",
     "JudgmentRecord",
+    "LiteLLMAgentProvider",
     "RoundSummaryDraft",
     "RoundSummaryRecord",
     "SuggestedSearch",
+    "build_agent_llm_provider_from_env",
     "get_debate_workflow_config",
 ]

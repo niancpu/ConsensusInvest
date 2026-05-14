@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from consensusinvest.agent_swarm import LiteLLMAgentProvider, build_agent_llm_provider_from_env
 from consensusinvest.runtime.env import load_local_env
 
 
@@ -54,3 +55,22 @@ def test_load_local_env_rejects_invalid_lines(tmp_path):
 
     with pytest.raises(ValueError, match="missing '='"):
         load_local_env(env_file)
+
+
+def test_agent_llm_provider_env_factory(monkeypatch):
+    monkeypatch.delenv("CONSENSUSINVEST_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("CONSENSUSINVEST_LLM_MODEL", raising=False)
+    assert build_agent_llm_provider_from_env() is None
+
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("CONSENSUSINVEST_SWARM_MODEL", "openai/gpt-4.1")
+    monkeypatch.setenv("CONSENSUSINVEST_JUDGE_MODEL", "openai/gpt-4.1")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_TEMPERATURE", "0.1")
+    provider = build_agent_llm_provider_from_env()
+
+    assert isinstance(provider, LiteLLMAgentProvider)
+    assert provider.model == "openai/gpt-4.1-mini"
+    assert provider.model_for("agent_argument") == "openai/gpt-4.1"
+    assert provider.model_for("judge") == "openai/gpt-4.1"
+    assert provider.temperature == 0.1

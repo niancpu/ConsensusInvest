@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
 import os
@@ -361,7 +362,7 @@ def _tavily_item(
         "url": url,
         "content": content,
         "content_preview": preview or _trim(content or "", 500) or None,
-        "publish_time": _clean(result.get("published_date") or result.get("publishedDate")),
+        "publish_time": _provider_datetime(result.get("published_date") or result.get("publishedDate")),
         "fetched_at": fetched_at,
         "language": task.constraints.language,
         "raw_payload": {
@@ -404,7 +405,7 @@ def _exa_item(
         "url": url,
         "content": _clean(result.get("text") or result.get("summary")),
         "content_preview": preview or _clean(result.get("summary")),
-        "publish_time": _clean(result.get("publishedDate") or result.get("published_date")),
+        "publish_time": _provider_datetime(result.get("publishedDate") or result.get("published_date")),
         "fetched_at": fetched_at,
         "author": _clean(result.get("author")),
         "language": task.constraints.language,
@@ -461,6 +462,25 @@ def _as_utc(value: datetime) -> datetime:
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _provider_datetime(value: Any) -> str | None:
+    text = _clean(value)
+    if text is None:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).isoformat()
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return _clean(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _clean(value: Any) -> str | None:

@@ -1,4 +1,4 @@
-"""Deterministic MVP Agent Swarm and Judge Runtime."""
+"""Agent Swarm and Judge Runtime."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from .config import (
     DebateWorkflowConfig,
     get_debate_workflow_config,
 )
+from .llm import AgentLLMProvider
 from .repository import InMemoryAgentSwarmRepository
 
 _T = TypeVar("_T")
@@ -49,10 +50,12 @@ class AgentSwarmRuntime:
         evidence_store: EvidenceStoreClient,
         repository: InMemoryAgentSwarmRepository | None = None,
         workflow_configs: Mapping[str, DebateWorkflowConfig] | None = None,
+        llm_provider: AgentLLMProvider | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.repository = repository or InMemoryAgentSwarmRepository()
         self.workflow_configs = workflow_configs or DEFAULT_DEBATE_WORKFLOW_CONFIGS
+        self.llm_provider = llm_provider
 
     def run(
         self,
@@ -117,15 +120,27 @@ class AgentSwarmRuntime:
             for agent_config in workflow_config.agents:
                 support_ids = _support_evidence_ids(details, round_number)
                 counter_ids = _counter_evidence_ids(details, round_number)
-                draft = _build_argument_draft(
-                    agent_config=agent_config,
-                    swarm_input=swarm_input,
-                    details=details,
-                    round_number=round_number,
-                    total_rounds=workflow_config.debate_rounds,
-                    support_ids=support_ids,
-                    counter_ids=counter_ids,
-                )
+                if self.llm_provider is not None:
+                    draft = _build_llm_argument_draft(
+                        self.llm_provider,
+                        agent_config=agent_config,
+                        swarm_input=swarm_input,
+                        details=details,
+                        round_number=round_number,
+                        total_rounds=workflow_config.debate_rounds,
+                        support_ids=support_ids,
+                        counter_ids=counter_ids,
+                    )
+                else:
+                    draft = _build_argument_draft(
+                        agent_config=agent_config,
+                        swarm_input=swarm_input,
+                        details=details,
+                        round_number=round_number,
+                        total_rounds=workflow_config.debate_rounds,
+                        support_ids=support_ids,
+                        counter_ids=counter_ids,
+                    )
                 argument = self.repository.save_argument(
                     workflow_run_id=swarm_input.workflow_run_id,
                     agent_run_id=agent_runs[agent_config.agent_id].agent_run_id,
@@ -148,30 +163,15 @@ class AgentSwarmRuntime:
                 )
                 self.repository.save_references(saved_argument_refs.accepted_references)
 
+            summary_draft = _build_round_summary_draft(
+                llm_provider=self.llm_provider,
+                workflow_run_id=swarm_input.workflow_run_id,
+                round_number=round_number,
+                total_rounds=workflow_config.debate_rounds,
+                arguments=round_arguments,
+            )
             summary = self.repository.save_round_summary(
-                RoundSummaryDraft(
-                    workflow_run_id=swarm_input.workflow_run_id,
-                    round=round_number,
-                    summary=_round_summary_text(
-                        round_number=round_number,
-                        total_rounds=workflow_config.debate_rounds,
-                        arguments=round_arguments,
-                    ),
-                    participants=tuple(argument.agent_id for argument in round_arguments),
-                    agent_argument_ids=tuple(
-                        argument.agent_argument_id for argument in round_arguments
-                    ),
-                    referenced_evidence_ids=_unique_ids(
-                        evidence_id
-                        for argument in round_arguments
-                        for evidence_id in argument.referenced_evidence_ids
-                    ),
-                    disputed_evidence_ids=_unique_ids(
-                        evidence_id
-                        for argument in round_arguments
-                        for evidence_id in argument.counter_evidence_ids
-                    ),
-                ),
+                summary_draft,
                 created_at=accepted_at,
             )
             saved_summary_ids.append(summary.round_summary_id)
@@ -246,6 +246,147 @@ def _build_argument_draft(
             "round": round_number,
             "total_rounds": total_rounds,
         },
+    )
+
+
+def _build_llm_argument_draft(
+    llm_provider: AgentLLMProvider,
+    *,
+    agent_config: DebateAgentConfig,
+    swarm_input: AgentSwarmInput,
+    details: list[Any],
+    round_number: int,
+    total_rounds: int,
+    support_ids: tuple[str, ...],
+    counter_ids: tuple[str, ...],
+) -> AgentArgumentDraft:
+    allowed_ids = tuple(detail.evidence.evidence_id for detail in details)
+    payload = {
+        "task": "build_agent_argument",
+        "output_schema": {
+            "argument": "string",
+            "confidence": "number between 0 and 1",
+            "referenced_evidence_ids": ["evidence_id from allowed_evidence_ids"],
+            "counter_evidence_ids": ["evidence_id from allowed_evidence_ids"],
+            "limitations": ["string"],
+            "role_output": "object",
+        },
+        "workflow": {
+            "workflow_run_id": swarm_input.workflow_run_id,
+            "ticker": swarm_input.ticker,
+            "entity_id": swarm_input.entity_id,
+            "round": round_number,
+            "total_rounds": total_rounds,
+        },
+        "agent": {
+            "agent_id": agent_config.agent_id,
+            "role": agent_config.role,
+            "stance_label": agent_config.stance_label,
+            "thesis_label": agent_config.thesis_label,
+            "stance_output_key": agent_config.stance_output_key,
+            "impact_output_key": agent_config.impact_output_key,
+            "default_limitation": agent_config.limitation,
+        },
+        "allowed_evidence_ids": list(allowed_ids),
+        "preferred_support_ids": list(support_ids),
+        "preferred_counter_ids": list(counter_ids),
+        "evidence": _llm_evidence_payload(details),
+    }
+    raw = llm_provider.complete_json(
+        purpose="agent_argument",
+        system_prompt=_AGENT_ARGUMENT_SYSTEM_PROMPT,
+        user_payload=payload,
+    )
+    references = _filter_ids(_clean_sequence(raw.get("referenced_evidence_ids")), allowed_ids)
+    counters = _filter_ids(_clean_sequence(raw.get("counter_evidence_ids")), allowed_ids)
+    if not references:
+        references = support_ids
+    limitations = tuple(_clean_sequence(raw.get("limitations"))) or (agent_config.limitation,)
+    role_output = raw.get("role_output")
+    if not isinstance(role_output, Mapping):
+        role_output = {}
+    role_output = dict(role_output)
+    role_output.setdefault("llm_provider", "litellm")
+    role_output.setdefault("round", round_number)
+    role_output.setdefault("total_rounds", total_rounds)
+    return AgentArgumentDraft(
+        agent_id=agent_config.agent_id,
+        role=agent_config.role,
+        round=round_number,
+        argument=_clean_key_value(raw.get("argument"))
+        or _build_argument_draft(
+            agent_config=agent_config,
+            swarm_input=swarm_input,
+            details=details,
+            round_number=round_number,
+            total_rounds=total_rounds,
+            support_ids=references,
+            counter_ids=counters,
+        ).argument,
+        confidence=_bounded_float(raw.get("confidence"), default=_round_confidence(details, round_number)),
+        referenced_evidence_ids=references,
+        counter_evidence_ids=counters,
+        limitations=limitations,
+        role_output=role_output,
+    )
+
+
+def _build_round_summary_draft(
+    *,
+    llm_provider: AgentLLMProvider | None,
+    workflow_run_id: str,
+    round_number: int,
+    total_rounds: int,
+    arguments: list[AgentArgumentRecord],
+) -> RoundSummaryDraft:
+    referenced_ids = _unique_ids(
+        evidence_id for argument in arguments for evidence_id in argument.referenced_evidence_ids
+    )
+    disputed_ids = _unique_ids(
+        evidence_id for argument in arguments for evidence_id in argument.counter_evidence_ids
+    )
+    argument_ids = tuple(argument.agent_argument_id for argument in arguments)
+    participants = tuple(argument.agent_id for argument in arguments)
+    summary_text = _round_summary_text(
+        round_number=round_number,
+        total_rounds=total_rounds,
+        arguments=arguments,
+    )
+    if llm_provider is not None:
+        raw = llm_provider.complete_json(
+            purpose="round_summary",
+            system_prompt=_ROUND_SUMMARY_SYSTEM_PROMPT,
+            user_payload={
+                "task": "build_round_summary",
+                "output_schema": {"summary": "string"},
+                "workflow_run_id": workflow_run_id,
+                "round": round_number,
+                "total_rounds": total_rounds,
+                "agent_argument_ids": list(argument_ids),
+                "arguments": [
+                    {
+                        "agent_argument_id": argument.agent_argument_id,
+                        "agent_id": argument.agent_id,
+                        "role": argument.role,
+                        "argument": argument.argument,
+                        "confidence": argument.confidence,
+                        "referenced_evidence_ids": list(argument.referenced_evidence_ids),
+                        "counter_evidence_ids": list(argument.counter_evidence_ids),
+                        "limitations": list(argument.limitations),
+                    }
+                    for argument in arguments
+                ],
+            },
+        )
+        summary_text = _clean_key_value(raw.get("summary")) or summary_text
+    return RoundSummaryDraft(
+        workflow_run_id=workflow_run_id,
+        round=round_number,
+        summary=summary_text,
+        participants=participants,
+        agent_argument_ids=argument_ids,
+        referenced_evidence_ids=referenced_ids,
+        disputed_evidence_ids=disputed_ids,
     )
 
 
@@ -340,6 +481,99 @@ def _unique_ids(values: Any) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _build_judgment_record(
+    *,
+    repository: InMemoryAgentSwarmRepository,
+    llm_provider: AgentLLMProvider | None,
+    judge_input: JudgeInput,
+    arguments: list[AgentArgumentRecord],
+    details: list[Any],
+    created_at: datetime,
+) -> JudgmentRecord:
+    positive_ids = tuple(detail.evidence.evidence_id for detail in details[:1])
+    negative_ids = tuple(detail.evidence.evidence_id for detail in details[1:2])
+    argument_ids = tuple(argument.agent_argument_id for argument in arguments)
+    if llm_provider is None:
+        final_signal = "neutral" if negative_ids else "bullish"
+        return JudgmentRecord(
+            judgment_id=repository.new_judgment_id(),
+            workflow_run_id=judge_input.workflow_run_id,
+            final_signal=final_signal,
+            confidence=0.74 if negative_ids else 0.78,
+            time_horizon="short_to_mid_term",
+            key_positive_evidence_ids=positive_ids,
+            key_negative_evidence_ids=negative_ids,
+            reasoning="基于已保存 Agent Argument 和 key Evidence，基本面支持 thesis 仍需与风险项共同评估。",
+            risk_notes=("反向 Evidence 或缺口会压低最终信号置信度。",) if negative_ids else (),
+            suggested_next_checks=("补充最新同业横向估值对比",),
+            referenced_agent_argument_ids=argument_ids,
+            limitations=("Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",),
+            created_at=created_at,
+        )
+
+    allowed_evidence_ids = tuple(detail.evidence.evidence_id for detail in details)
+    raw = llm_provider.complete_json(
+        purpose="judge",
+        system_prompt=_JUDGE_SYSTEM_PROMPT,
+        user_payload={
+            "task": "build_judgment",
+            "output_schema": {
+                "final_signal": "bullish|bearish|neutral|insufficient_evidence",
+                "confidence": "number between 0 and 1",
+                "time_horizon": "string",
+                "key_positive_evidence_ids": ["evidence_id from allowed_evidence_ids"],
+                "key_negative_evidence_ids": ["evidence_id from allowed_evidence_ids"],
+                "reasoning": "string",
+                "risk_notes": ["string"],
+                "suggested_next_checks": ["string"],
+                "referenced_agent_argument_ids": ["id from allowed_agent_argument_ids"],
+                "limitations": ["string"],
+            },
+            "workflow_run_id": judge_input.workflow_run_id,
+            "allowed_evidence_ids": list(allowed_evidence_ids),
+            "allowed_agent_argument_ids": list(argument_ids),
+            "arguments": [
+                {
+                    "agent_argument_id": argument.agent_argument_id,
+                    "agent_id": argument.agent_id,
+                    "role": argument.role,
+                    "round": argument.round,
+                    "argument": argument.argument,
+                    "confidence": argument.confidence,
+                    "referenced_evidence_ids": list(argument.referenced_evidence_ids),
+                    "counter_evidence_ids": list(argument.counter_evidence_ids),
+                    "limitations": list(argument.limitations),
+                }
+                for argument in arguments
+            ],
+            "evidence": _llm_evidence_payload(details),
+        },
+    )
+    llm_positive = _filter_ids(_clean_sequence(raw.get("key_positive_evidence_ids")), allowed_evidence_ids)
+    llm_negative = _filter_ids(_clean_sequence(raw.get("key_negative_evidence_ids")), allowed_evidence_ids)
+    llm_argument_ids = _filter_ids(_clean_sequence(raw.get("referenced_agent_argument_ids")), argument_ids)
+    final_signal = _clean_key_value(raw.get("final_signal")) or ("neutral" if negative_ids else "bullish")
+    if final_signal not in {"bullish", "bearish", "neutral", "insufficient_evidence"}:
+        final_signal = "neutral"
+    return JudgmentRecord(
+        judgment_id=repository.new_judgment_id(),
+        workflow_run_id=judge_input.workflow_run_id,
+        final_signal=final_signal,
+        confidence=_bounded_float(raw.get("confidence"), default=0.74),
+        time_horizon=_clean_key_value(raw.get("time_horizon")) or "short_to_mid_term",
+        key_positive_evidence_ids=llm_positive or positive_ids,
+        key_negative_evidence_ids=llm_negative or negative_ids,
+        reasoning=_clean_key_value(raw.get("reasoning"))
+        or "基于已保存 Agent Argument 和 key Evidence 形成判断。",
+        risk_notes=tuple(_clean_sequence(raw.get("risk_notes"))),
+        suggested_next_checks=tuple(_clean_sequence(raw.get("suggested_next_checks"))),
+        referenced_agent_argument_ids=llm_argument_ids or argument_ids,
+        limitations=tuple(_clean_sequence(raw.get("limitations")))
+        or ("Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",),
+        created_at=created_at,
+    )
+
+
 class JudgeRuntime:
     """Produces final workflow judgment from saved arguments and Evidence."""
 
@@ -348,9 +582,11 @@ class JudgeRuntime:
         *,
         evidence_store: EvidenceStoreClient,
         repository: InMemoryAgentSwarmRepository,
+        llm_provider: AgentLLMProvider | None = None,
     ) -> None:
         self.evidence_store = evidence_store
         self.repository = repository
+        self.llm_provider = llm_provider
 
     def run(
         self,
@@ -410,22 +646,12 @@ class JudgeRuntime:
                     ),
                 )
 
-        positive_ids = tuple(detail.evidence.evidence_id for detail in details[:1])
-        negative_ids = tuple(detail.evidence.evidence_id for detail in details[1:2])
-        final_signal = "neutral" if negative_ids else "bullish"
-        judgment = JudgmentRecord(
-            judgment_id=self.repository.new_judgment_id(),
-            workflow_run_id=judge_input.workflow_run_id,
-            final_signal=final_signal,
-            confidence=0.74 if negative_ids else 0.78,
-            time_horizon="short_to_mid_term",
-            key_positive_evidence_ids=positive_ids,
-            key_negative_evidence_ids=negative_ids,
-            reasoning="基于已保存 Agent Argument 和 key Evidence，基本面支持 thesis 仍需与风险项共同评估。",
-            risk_notes=("反向 Evidence 或缺口会压低最终信号置信度。",) if negative_ids else (),
-            suggested_next_checks=("补充最新同业横向估值对比",),
-            referenced_agent_argument_ids=tuple(argument.agent_argument_id for argument in arguments),
-            limitations=("Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",),
+        judgment = _build_judgment_record(
+            repository=self.repository,
+            llm_provider=self.llm_provider,
+            judge_input=judge_input,
+            arguments=arguments,
+            details=details,
             created_at=accepted_at,
         )
         self.repository.save_judgment(judgment)
@@ -519,6 +745,71 @@ def _suggested_search(swarm_input: AgentSwarmInput) -> SuggestedSearch:
     )
 
 
+def _llm_evidence_payload(details: list[Any]) -> list[dict[str, Any]]:
+    payload = []
+    for detail in details:
+        evidence = detail.evidence
+        structure = getattr(detail, "structure", None)
+        payload.append(
+            {
+                "evidence_id": evidence.evidence_id,
+                "ticker": evidence.ticker,
+                "source": evidence.source,
+                "source_type": evidence.source_type,
+                "evidence_type": evidence.evidence_type,
+                "title": evidence.title,
+                "content": evidence.content,
+                "url": evidence.url,
+                "publish_time": evidence.publish_time.isoformat()
+                if evidence.publish_time is not None
+                else None,
+                "source_quality": evidence.source_quality,
+                "relevance": evidence.relevance,
+                "freshness": evidence.freshness,
+                "objective_summary": getattr(structure, "objective_summary", None),
+                "claims": getattr(structure, "claims", None),
+            }
+        )
+    return payload
+
+
+def _filter_ids(values: list[str], allowed_ids: tuple[str, ...]) -> tuple[str, ...]:
+    allowed = set(allowed_ids)
+    return _unique_ids(value for value in values if value in allowed)
+
+
+def _clean_key_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _clean_sequence(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        cleaned = _clean_key_value(value)
+        return [cleaned] if cleaned is not None else []
+    if isinstance(value, (list, tuple, set)):
+        result: list[str] = []
+        for item in value:
+            cleaned = _clean_key_value(item)
+            if cleaned is not None and cleaned not in result:
+                result.append(cleaned)
+        return result
+    cleaned = _clean_key_value(value)
+    return [cleaned] if cleaned is not None else []
+
+
+def _bounded_float(value: Any, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return round(max(0.0, min(parsed, 1.0)), 2)
+
+
 def _coerce_agent_swarm_input(value: AgentSwarmInput | Mapping[str, Any]) -> AgentSwarmInput:
     if isinstance(value, AgentSwarmInput):
         return value
@@ -547,3 +838,22 @@ def _coerce_dataclass(cls: type[_T], value: Any) -> _T:
     data = dict(value or {})
     allowed = {field.name for field in fields(cls)}
     return cls(**{key: data[key] for key in allowed if key in data})
+
+
+_AGENT_ARGUMENT_SYSTEM_PROMPT = """You are an investment research debate agent.
+Return exactly one JSON object and no markdown.
+Use only the provided Evidence IDs. Do not invent Evidence, facts, URLs, SearchTasks, or provider calls.
+You may make analytical arguments, but every important claim must cite provided Evidence IDs.
+Never include buy/sell/hold recommendations or trade instructions in Evidence-facing fields."""
+
+
+_ROUND_SUMMARY_SYSTEM_PROMPT = """You summarize one debate round for audit navigation.
+Return exactly one JSON object and no markdown.
+Do not introduce new facts. Compress only the provided Agent Arguments and preserve traceability."""
+
+
+_JUDGE_SYSTEM_PROMPT = """You are the Judge Runtime for an evidence-driven investment workflow.
+Return exactly one JSON object and no markdown.
+Use only the provided Agent Arguments and Evidence IDs.
+Do not call search, do not invent Evidence, and do not include ungrounded facts.
+The judgment may state a bounded final_signal, confidence, risks, limitations, and next checks."""

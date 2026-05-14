@@ -101,6 +101,27 @@ def test_tavily_provider_posts_constrained_query_and_maps_results():
     assert item["raw_payload"]["provider_request"]["query"] == payload["query"]
 
 
+def test_tavily_provider_normalizes_http_date_publish_time():
+    http = FakeHTTPClient(
+        {
+            "results": [
+                {
+                    "title": "BYD update",
+                    "url": "https://example.com/byd/http-date",
+                    "content": "BYD update.",
+                    "published_date": "Mon, 11 May 2026 22:00:29 GMT",
+                    "score": 0.8,
+                }
+            ],
+        }
+    )
+    provider = TavilySearchProvider(api_key="tv_key", http_client=http)
+
+    response = provider.search(make_envelope(), make_task(max_results=1))
+
+    assert response.items[0]["publish_time"] == "2026-05-11T22:00:29+00:00"
+
+
 def test_exa_provider_posts_constrained_query_and_maps_results():
     http = FakeHTTPClient(
         {

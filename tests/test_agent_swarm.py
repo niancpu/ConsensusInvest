@@ -10,6 +10,46 @@ from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.search_agent.models import SearchResultPackage, SearchTarget
 
 
+class FakeLLMProvider:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def complete_json(self, *, purpose, system_prompt, user_payload, model=None):
+        self.calls.append(
+            {
+                "purpose": purpose,
+                "system_prompt": system_prompt,
+                "user_payload": user_payload,
+                "model": model,
+            }
+        )
+        if purpose == "agent_argument":
+            return {
+                "argument": "LLM argument grounded in allowed Evidence only.",
+                "confidence": 0.93,
+                "referenced_evidence_ids": ["ev_000001", "ev_fake"],
+                "counter_evidence_ids": ["ev_000002", "ev_fake"],
+                "limitations": ["LLM limitation"],
+                "role_output": {"stance_interpretation": "LLM stance"},
+            }
+        if purpose == "round_summary":
+            return {"summary": "LLM round summary without new facts."}
+        if purpose == "judge":
+            return {
+                "final_signal": "bullish",
+                "confidence": 0.91,
+                "time_horizon": "mid_term",
+                "key_positive_evidence_ids": ["ev_000001", "ev_fake"],
+                "key_negative_evidence_ids": ["ev_000002"],
+                "reasoning": "LLM judgment grounded in saved arguments and Evidence.",
+                "risk_notes": ["LLM risk"],
+                "suggested_next_checks": ["LLM next check"],
+                "referenced_agent_argument_ids": ["arg_000001", "arg_fake"],
+                "limitations": ["LLM judge limitation"],
+            }
+        raise AssertionError(f"unexpected purpose: {purpose}")
+
+
 class AgentSwarmRuntimeTests(unittest.TestCase):
     def make_envelope(self, *, idempotency_key="agent_swarm") -> InternalCallEnvelope:
         return InternalCallEnvelope(
@@ -117,6 +157,32 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual("missing_core_evidence", outcome.gaps[0].gap_type)
         self.assertIsNotNone(outcome.gaps[0].suggested_search)
 
+    def test_swarm_uses_llm_provider_and_filters_unowned_evidence_ids(self):
+        store = self.make_store()
+        llm = FakeLLMProvider()
+        runtime = AgentSwarmRuntime(evidence_store=store, llm_provider=llm)
+
+        outcome = runtime.run(
+            self.make_envelope(idempotency_key="run_llm_swarm"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": ["ev_000001", "ev_000002"]},
+            },
+        )
+
+        self.assertEqual("completed", outcome.status)
+        first_argument = runtime.repository.get_argument(outcome.agent_argument_ids[0])
+        self.assertIsNotNone(first_argument)
+        assert first_argument is not None
+        self.assertEqual("LLM argument grounded in allowed Evidence only.", first_argument.argument)
+        self.assertEqual(("ev_000001",), first_argument.referenced_evidence_ids)
+        self.assertEqual(("ev_000002",), first_argument.counter_evidence_ids)
+        self.assertEqual("LLM round summary without new facts.", runtime.repository.list_round_summaries("wr_agent_swarm_001")[0].summary)
+        self.assertEqual(["agent_argument", "round_summary"] * 3, [call["purpose"] for call in llm.calls])
+
     def test_judge_saves_judgment_tool_calls_and_references(self):
         store = self.make_store()
         envelope = self.make_envelope(idempotency_key="run_swarm_then_judge")
@@ -153,6 +219,43 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
             {"source_type": "judgment", "source_id": outcome.judgment_id},
         )
         self.assertEqual(["supports", "counters"], [ref.reference_role for ref in refs])
+
+    def test_judge_uses_llm_provider_and_filters_unowned_ids(self):
+        store = self.make_store()
+        llm = FakeLLMProvider()
+        envelope = self.make_envelope(idempotency_key="run_llm_swarm_then_judge")
+        swarm = AgentSwarmRuntime(evidence_store=store, llm_provider=llm)
+        swarm_outcome = swarm.run(
+            envelope,
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": ["ev_000001", "ev_000002"]},
+            },
+        )
+        judge = JudgeRuntime(evidence_store=store, repository=swarm.repository, llm_provider=llm)
+
+        outcome = judge.run(
+            self.make_envelope(idempotency_key="run_llm_judge"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "round_summary_ids": list(swarm_outcome.round_summary_ids),
+                "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                "key_evidence_ids": ["ev_000001", "ev_000002"],
+            },
+        )
+
+        self.assertEqual("completed", outcome.status)
+        judgment = swarm.repository.get_judgment(outcome.judgment_id or "")
+        self.assertIsNotNone(judgment)
+        assert judgment is not None
+        self.assertEqual("bullish", judgment.final_signal)
+        self.assertEqual(("ev_000001",), judgment.key_positive_evidence_ids)
+        self.assertEqual(("ev_000002",), judgment.key_negative_evidence_ids)
+        self.assertEqual(("arg_000001",), judgment.referenced_agent_argument_ids)
+        self.assertEqual("LLM judgment grounded in saved arguments and Evidence.", judgment.reasoning)
 
 
 if __name__ == "__main__":
