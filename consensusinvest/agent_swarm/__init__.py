@@ -1,5 +1,11 @@
 """Agent Swarm and Judge Runtime."""
 
+from consensusinvest.agent_swarm.config import (
+    DEFAULT_DEBATE_WORKFLOW_CONFIGS,
+    DebateAgentConfig,
+    DebateWorkflowConfig,
+    get_debate_workflow_config,
+)
 from consensusinvest.agent_swarm.models import (
     AgentArgumentDraft,
     AgentArgumentRecord,
@@ -29,6 +35,9 @@ __all__ = [
     "AgentSwarmInput",
     "AgentSwarmRunOutcome",
     "AgentSwarmRuntime",
+    "DEFAULT_DEBATE_WORKFLOW_CONFIGS",
+    "DebateAgentConfig",
+    "DebateWorkflowConfig",
     "EvidenceGap",
     "EvidenceSelection",
     "InMemoryAgentSwarmRepository",
@@ -41,4 +50,5 @@ __all__ = [
     "RoundSummaryDraft",
     "RoundSummaryRecord",
     "SuggestedSearch",
+    "get_debate_workflow_config",
 ]

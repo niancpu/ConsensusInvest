@@ -139,10 +139,12 @@ class AgentSwarmRunOutcome:
     accepted_at: datetime
     agent_argument_ids: tuple[str, ...] = ()
     round_summary_id: str | None = None
+    round_summary_ids: tuple[str, ...] = ()
     gaps: tuple[EvidenceGap, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "agent_argument_ids", tuple(self.agent_argument_ids))
+        object.__setattr__(self, "round_summary_ids", tuple(self.round_summary_ids))
         object.__setattr__(self, "gaps", tuple(self.gaps))
 
 

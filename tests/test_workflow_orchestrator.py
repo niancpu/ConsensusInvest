@@ -94,11 +94,15 @@ def test_workflow_orchestrator_runs_swarm_judge_and_builds_trace() -> None:
     assert run.judgment_id is not None
     snapshot = service.snapshot(run.workflow_run_id)
     assert len(snapshot["evidence_items"]) == 2
-    assert len(snapshot["agent_arguments"]) == 1
+    assert len(snapshot["agent_arguments"]) == 3
+    assert len(snapshot["round_summaries"]) == 3
+    assert snapshot["agent_runs"][0].rounds == (1, 2, 3)
     assert snapshot["judgment"].judgment_id == run.judgment_id
     nodes, edges = service.trace(run.workflow_run_id)
     assert any(node.node_type == "judgment" for node in nodes)
+    assert any(node.node_type == "round_summary" for node in nodes)
     assert any(edge.edge_type == "uses_argument" for edge in edges)
+    assert any(edge.edge_type == "uses_round_summary" for edge in edges)
 
 
 def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> None:

@@ -166,7 +166,7 @@ class SearchEvidenceSwarmSQLiteE2ETests(unittest.TestCase):
                 self.make_envelope(idempotency_key="judge_e2e_001"),
                 {
                     "workflow_run_id": "wr_e2e_001",
-                    "round_summary_ids": [swarm_outcome.round_summary_id],
+                    "round_summary_ids": list(swarm_outcome.round_summary_ids),
                     "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
                     "key_evidence_ids": evidence_ids,
                 },
@@ -181,8 +181,10 @@ class SearchEvidenceSwarmSQLiteE2ETests(unittest.TestCase):
             self.assertIn("agent_argument", source_types)
             self.assertIn("round_summary", source_types)
             self.assertIn("judgment", source_types)
-            self.assertEqual(6, len(refs))
+            self.assertEqual(14, len(refs))
             self.assertEqual({"ev_000001", "ev_000002"}, {ref.evidence_id for ref in refs})
+            self.assertEqual({1, 2, 3}, {ref.round for ref in refs if ref.source_type != "judgment"})
+            self.assertEqual({None}, {ref.round for ref in refs if ref.source_type == "judgment"})
             store.close()
 
     def test_swarm_and_judge_reject_missing_sqlite_evidence_ids_without_references(self):

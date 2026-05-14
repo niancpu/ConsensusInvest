@@ -82,7 +82,9 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual("completed", outcome.status)
-        self.assertEqual(1, len(outcome.agent_argument_ids))
+        self.assertEqual(3, len(outcome.agent_argument_ids))
+        self.assertEqual(3, len(outcome.round_summary_ids))
+        self.assertEqual(outcome.round_summary_ids[-1], outcome.round_summary_id)
         refs = store.query_references(
             envelope,
             {
@@ -91,8 +93,12 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
             },
         )
         self.assertEqual(["supports", "supports"], [ref.reference_role for ref in refs])
+        self.assertEqual([1, 1], [ref.round for ref in refs])
         summaries = runtime.repository.list_round_summaries("wr_agent_swarm_001")
-        self.assertEqual(outcome.round_summary_id, summaries[0].round_summary_id)
+        self.assertEqual([1, 2, 3], [summary.round for summary in summaries])
+        self.assertEqual(list(outcome.round_summary_ids), [summary.round_summary_id for summary in summaries])
+        runs = runtime.repository.list_agent_runs("wr_agent_swarm_001")
+        self.assertEqual((1, 2, 3), runs[0].rounds)
 
     def test_swarm_returns_gap_without_calling_search_when_evidence_empty(self):
         runtime = AgentSwarmRuntime(evidence_store=FakeEvidenceStoreClient())
@@ -131,7 +137,7 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
             self.make_envelope(idempotency_key="run_judge"),
             {
                 "workflow_run_id": "wr_agent_swarm_001",
-                "round_summary_ids": [swarm_outcome.round_summary_id],
+                "round_summary_ids": list(swarm_outcome.round_summary_ids),
                 "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
                 "key_evidence_ids": ["ev_000001", "ev_000002"],
             },

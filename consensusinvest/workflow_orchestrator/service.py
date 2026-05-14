@@ -10,6 +10,7 @@ from uuid import uuid4
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
 from consensusinvest.agent_swarm.models import EvidenceSelection, JudgeToolAccess
 from consensusinvest.evidence_store import EvidenceQuery, EvidenceStoreClient
+from consensusinvest.evidence_structuring import EvidenceStructuringAgent
 from consensusinvest.runtime import InternalCallEnvelope
 
 from .acquisition import EvidenceAcquisitionService, build_gap_fill_request
@@ -33,12 +34,16 @@ class WorkflowOrchestrator:
         agent_swarm: AgentSwarmRuntime,
         judge: JudgeRuntime,
         acquisition: EvidenceAcquisitionService | None = None,
+        evidence_structurer: EvidenceStructuringAgent | None = None,
     ) -> None:
         self.repository = repository or InMemoryWorkflowRepository()
         self.evidence_store = evidence_store
         self.agent_swarm = agent_swarm
         self.judge = judge
         self.acquisition = acquisition or EvidenceAcquisitionService()
+        self.evidence_structurer = evidence_structurer or EvidenceStructuringAgent(
+            evidence_store=evidence_store
+        )
 
     def create_run(self, request: WorkflowRunCreate) -> WorkflowRunRecord:
         now = _timestamp(request.analysis_time)
@@ -77,11 +82,14 @@ class WorkflowOrchestrator:
         run = self.repository.update_run(
             workflow_run_id,
             status="running",
-            stage="evidence_selection",
+            stage="normalizing_evidence",
             started_at=started_at,
         )
         self.repository.append_event(workflow_run_id, "workflow_started", {}, created_at=started_at)
+        run = self.repository.update_run(workflow_run_id, stage="evidence_selection")
         evidence_ids = self._select_evidence(run)
+        run = self.repository.update_run(workflow_run_id, stage="structuring_evidence")
+        self._structure_selected_evidence(run, evidence_ids)
         progress = WorkflowProgress(
             raw_items_collected=len(evidence_ids),
             evidence_items_normalized=len(evidence_ids),
@@ -106,17 +114,26 @@ class WorkflowOrchestrator:
         if swarm_outcome.status == "insufficient_evidence":
             return self._mark_insufficient(run, tuple(swarm_outcome.gaps))
         for argument_id in swarm_outcome.agent_argument_ids:
+            argument = self.agent_swarm.repository.get_argument(argument_id)
             self.repository.append_event(
                 workflow_run_id,
                 "agent_argument_completed",
-                {"agent_argument_id": argument_id},
+                {
+                    "agent_argument_id": argument_id,
+                    "round": argument.round if argument is not None else None,
+                },
                 created_at=swarm_outcome.accepted_at,
             )
-        if swarm_outcome.round_summary_id:
+        round_summary_ids = _round_summary_ids(swarm_outcome)
+        for round_summary_id in round_summary_ids:
+            summary = self.agent_swarm.repository.get_round_summary(round_summary_id)
             self.repository.append_event(
                 workflow_run_id,
                 "round_summary_completed",
-                {"round_summary_id": swarm_outcome.round_summary_id},
+                {
+                    "round_summary_id": round_summary_id,
+                    "round": summary.round if summary is not None else None,
+                },
                 created_at=swarm_outcome.accepted_at,
             )
         progress = WorkflowProgress(
@@ -132,7 +149,7 @@ class WorkflowOrchestrator:
             self._envelope(run, suffix="judge"),
             {
                 "workflow_run_id": workflow_run_id,
-                "round_summary_ids": [swarm_outcome.round_summary_id] if swarm_outcome.round_summary_id else [],
+                "round_summary_ids": list(round_summary_ids),
                 "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
                 "key_evidence_ids": evidence_ids,
                 "tool_access": JudgeToolAccess(),
@@ -244,6 +261,31 @@ class WorkflowOrchestrator:
                         edge_type="supports" if evidence_id in argument.referenced_evidence_ids else "counters",
                     )
                 )
+        for summary in self.agent_swarm.repository.list_round_summaries(workflow_run_id):
+            nodes.append(
+                WorkflowTraceNode(
+                    node_type="round_summary",
+                    node_id=summary.round_summary_id,
+                    title=f"Round {summary.round} summary",
+                    summary=summary.summary,
+                )
+            )
+            for argument_id in summary.agent_argument_ids:
+                edges.append(
+                    WorkflowTraceEdge(
+                        from_node_id=summary.round_summary_id,
+                        to_node_id=argument_id,
+                        edge_type="summarizes_argument",
+                    )
+                )
+            if judgment is not None:
+                edges.append(
+                    WorkflowTraceEdge(
+                        from_node_id=judgment.judgment_id,
+                        to_node_id=summary.round_summary_id,
+                        edge_type="uses_round_summary",
+                    )
+                )
         for evidence in self._query_evidence(run, limit=100):
             nodes.append(
                 WorkflowTraceNode(
@@ -281,6 +323,31 @@ class WorkflowOrchestrator:
 
     def _select_evidence(self, run: WorkflowRunRecord) -> list[str]:
         return [item.evidence_id for item in self._query_evidence(run, limit=run.query.max_results)]
+
+    def _structure_selected_evidence(self, run: WorkflowRunRecord, evidence_ids: list[str]) -> None:
+        for evidence_id in evidence_ids:
+            self.repository.append_event(
+                run.workflow_run_id,
+                "evidence_structuring_started",
+                {"evidence_id": evidence_id, "agent_id": self.evidence_structurer.agent_id},
+                created_at=_timestamp(run.analysis_time),
+            )
+            outcome = self.evidence_structurer.structure_evidence(
+                self._envelope(run, suffix=f"structure_{evidence_id}"),
+                evidence_id,
+            )
+            if outcome.status != "structured" or outcome.structure is None:
+                continue
+            self.repository.append_event(
+                run.workflow_run_id,
+                "evidence_structured",
+                {
+                    "evidence_id": evidence_id,
+                    "evidence_structure_id": outcome.structure.structure_id,
+                    "created_by_agent_id": outcome.structure.created_by_agent_id,
+                },
+                created_at=outcome.structure.created_at or _timestamp(run.analysis_time),
+            )
 
     def _query_evidence(self, run: WorkflowRunRecord, *, limit: int) -> list[Any]:
         page = self.evidence_store.query_evidence(
@@ -395,6 +462,14 @@ class WorkflowOrchestrator:
 
 def _timestamp(value: datetime | None) -> datetime:
     return value or datetime.now(UTC)
+
+
+def _round_summary_ids(swarm_outcome: Any) -> tuple[str, ...]:
+    ids = tuple(getattr(swarm_outcome, "round_summary_ids", ()) or ())
+    if ids:
+        return ids
+    round_summary_id = getattr(swarm_outcome, "round_summary_id", None)
+    return (round_summary_id,) if round_summary_id else ()
 
 
 def _to_plain(value: Any) -> Any:
