@@ -18,7 +18,7 @@ from .models import (
 
 class SQLiteSearchTaskRepository:
     def __init__(self, path: str | Path = ":memory:") -> None:
-        self._connection = sqlite3.connect(str(path))
+        self._connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._ensure_schema()
 

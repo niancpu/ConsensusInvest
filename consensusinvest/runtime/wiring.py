@@ -12,9 +12,15 @@ from consensusinvest.agent_swarm.repository import (
 )
 from consensusinvest.entities import InMemoryEntityRepository, seed_entity_repository
 from consensusinvest.evidence_store import EvidenceStructureDraft, FakeEvidenceStoreClient
+from consensusinvest.runtime.env import load_local_env
 from consensusinvest.runtime.models import InternalCallEnvelope
+from consensusinvest.search_agent import SearchAgentPool, build_real_search_providers_from_env
 from consensusinvest.search_agent.models import SearchResultPackage, SearchTarget
-from consensusinvest.workflow_orchestrator import InMemoryWorkflowRepository, WorkflowOrchestrator
+from consensusinvest.workflow_orchestrator import (
+    EvidenceAcquisitionService,
+    InMemoryWorkflowRepository,
+    WorkflowOrchestrator,
+)
 
 
 @dataclass(slots=True)
@@ -25,10 +31,12 @@ class AppRuntime:
     workflow_repository: InMemoryWorkflowRepository
     agent_swarm: AgentSwarmRuntime
     judge: JudgeRuntime
+    search_pool: SearchAgentPool
     workflow_service: WorkflowOrchestrator
 
 
 def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
+    load_local_env()
     evidence_store = FakeEvidenceStoreClient()
     entity_repository = seed_entity_repository()
     if seed_demo_data:
@@ -43,11 +51,16 @@ def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
         evidence_store=evidence_store,
         repository=agent_repository,
     )
+    search_pool = SearchAgentPool(
+        providers=build_real_search_providers_from_env(),
+        evidence_store=evidence_store,
+    )
     workflow_service = WorkflowOrchestrator(
         repository=workflow_repository,
         evidence_store=evidence_store,
         agent_swarm=agent_swarm,
         judge=judge,
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
     )
     return AppRuntime(
         evidence_store=evidence_store,
@@ -56,6 +69,7 @@ def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
         workflow_repository=workflow_repository,
         agent_swarm=agent_swarm,
         judge=judge,
+        search_pool=search_pool,
         workflow_service=workflow_service,
     )
 

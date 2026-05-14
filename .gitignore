@@ -9,6 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Local secrets and machine-specific runtime configuration
+.env
+.env.*
+!.env.example
+
 /AGENTS.md
 /CLAUDE.md
 start claude.bat
