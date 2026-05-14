@@ -1,3 +1,3 @@
-"""ConsensusInvest internal Python package."""
+"""ConsensusInvest — evidence-driven A-share investment research system."""
 
-__all__ = ["evidence_store", "runtime", "search_agent"]
+__version__ = "0.1.0"
