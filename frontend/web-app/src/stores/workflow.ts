@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { fetchWorkflowRun, fetchWorkflowSnapshot } from '../api/workflow'
-import { createWorkflowEventSource, parseWorkflowEvent } from '../utils/sse'
+import { createWorkflowEventSource, parseWorkflowEvent, workflowSseEventTypes } from '../utils/sse'
 import type { WorkflowEvent, WorkflowRunDetail, WorkflowSnapshot } from '../types/workflow'
 
 export const useWorkflowStore = defineStore('workflow', () => {
@@ -21,8 +21,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
     events.value = [...events.value, nextEvent].sort((a, b) => a.sequence - b.sequence)
     lastSequence.value = Math.max(lastSequence.value ?? 0, nextEvent.sequence)
 
-    if (nextEvent.event_type === 'workflow_started' || nextEvent.event_type === 'workflow_completed' || nextEvent.event_type === 'workflow_failed') {
+    if (
+      nextEvent.event_type === 'workflow_started' ||
+      nextEvent.event_type === 'workflow_completed' ||
+      nextEvent.event_type === 'workflow_failed'
+    ) {
       void loadWorkflowRun(nextEvent.workflow_run_id)
+    }
+
+    if (nextEvent.event_type === 'snapshot') {
+      void loadSnapshot(nextEvent.workflow_run_id)
     }
   }
 
@@ -55,8 +63,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     eventSource = createWorkflowEventSource(workflowRunId, lastSequence.value)
     isStreaming.value = true
 
-    eventSource.onmessage = (event) => {
+    const handleEvent = (event: MessageEvent<string>) => {
       mergeEvent(parseWorkflowEvent(event))
+    }
+
+    eventSource.onmessage = handleEvent
+    for (const eventType of workflowSseEventTypes) {
+      eventSource.addEventListener(eventType, handleEvent)
     }
 
     eventSource.onerror = () => {

@@ -22,7 +22,7 @@ class WorkflowQueryRequest(WorkflowModel):
 class WorkflowOptionsRequest(WorkflowModel):
     stream: bool = True
     include_raw_payload: bool = False
-    auto_run: bool = True
+    auto_run: bool = False
 
 
 class WorkflowRunCreateRequest(WorkflowModel):

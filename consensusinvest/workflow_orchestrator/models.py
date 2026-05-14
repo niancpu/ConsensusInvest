@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from consensusinvest.agent_swarm.models import EvidenceGap
 
-WorkflowStatus = Literal["queued", "running", "completed", "failed", "insufficient_evidence", "cancelled"]
+WorkflowStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 WorkflowStage = Literal[
     "queued",
     "collecting_raw_items",

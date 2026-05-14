@@ -129,7 +129,7 @@ def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> Non
         )
     )
 
-    assert run.status == "insufficient_evidence"
+    assert run.status == "failed"
     assert run.failure_code == "insufficient_evidence"
     assert run.evidence_gaps
     events = service.list_events(run.workflow_run_id)

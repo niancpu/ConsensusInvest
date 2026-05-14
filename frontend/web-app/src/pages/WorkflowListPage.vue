@@ -21,8 +21,8 @@ async function loadWorkflowRuns(cursor?: string) {
 
   try {
     const response = await fetchWorkflowRuns(cursor)
-    workflowRuns.value = cursor ? [...workflowRuns.value, ...response.items] : response.items
-    nextCursor.value = response.next_cursor ?? null
+    workflowRuns.value = cursor ? [...workflowRuns.value, ...response] : response
+    nextCursor.value = null
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? `${error.code}: ${error.message}` : '加载工作流列表失败。'
   } finally {

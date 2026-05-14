@@ -81,7 +81,7 @@ def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     detail = client.get(f"/api/v1/workflow-runs/{workflow_run_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["data"]["workflow_run_id"] == workflow_run_id
-    assert detail.json()["data"]["status"] == "insufficient_evidence"
+    assert detail.json()["data"]["status"] == "failed"
 
     listing = client.get("/api/v1/workflow-runs", params={"ticker": "002594"})
     assert listing.status_code == 200, listing.text
@@ -109,6 +109,30 @@ def test_workflow_api_not_found_error() -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "WORKFLOW_RUN_NOT_FOUND"
+
+
+def test_workflow_api_create_defaults_to_queued_without_autorun() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "ticker": "002594",
+            "analysis_time": "2026-05-13T10:00:00+00:00",
+            "workflow_config_id": "mvp_bull_judge_v1",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    created = response.json()["data"]
+    assert created["status"] == "queued"
+
+    detail = client.get(f"/api/v1/workflow-runs/{created['workflow_run_id']}")
+    assert detail.status_code == 200, detail.text
+    data = detail.json()["data"]
+    assert data["status"] == "queued"
+    assert data["stage"] == "queued"
+    assert data["started_at"] is None
 
 
 def test_workflow_api_snapshot_projects_judge_tool_calls_and_events() -> None:

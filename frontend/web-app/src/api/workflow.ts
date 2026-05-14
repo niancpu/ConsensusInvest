@@ -9,7 +9,7 @@ import type {
   WorkflowRunCreateRequest,
   WorkflowRunCreateResponse,
   WorkflowRunDetail,
-  WorkflowRunListResponse,
+  WorkflowRunSummary,
   WorkflowSnapshot,
   WorkflowTrace,
   EvidenceItem,
@@ -24,7 +24,7 @@ export function createWorkflowRun(payload: WorkflowRunCreateRequest) {
 }
 
 export function fetchWorkflowRuns(cursor?: string) {
-  return getJson<WorkflowRunListResponse>('/api/v1/workflow-runs', { cursor })
+  return getJson<WorkflowRunSummary[]>('/api/v1/workflow-runs', { cursor })
 }
 
 export function fetchWorkflowRun(workflowRunId: string) {

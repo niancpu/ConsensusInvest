@@ -12,6 +12,7 @@ from consensusinvest.agent_swarm import (
 )
 from consensusinvest.entities import InMemoryEntityRepository, SQLiteEntityRepository
 from consensusinvest.evidence_store import InMemoryEvidenceStoreClient, SQLiteEvidenceStoreClient
+from consensusinvest.app import create_app
 from consensusinvest.report_module.repository import SQLiteReportRunRepository
 from consensusinvest.runtime.env import load_local_env
 from consensusinvest.runtime.repository import SQLiteRuntimeEventRepository
@@ -201,3 +202,47 @@ def test_build_runtime_keeps_explicit_in_memory_escape_hatch(monkeypatch):
     search_db_path = next(row["file"] for row in search_db_rows if row["name"] == "main")
     assert search_db_path in {"", ":memory:"}
     runtime.search_pool.repository.close()
+
+
+def test_importing_app_module_does_not_build_runtime(monkeypatch):
+    monkeypatch.delenv("CONSENSUSINVEST_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("CONSENSUSINVEST_LLM_MODEL", raising=False)
+
+    from consensusinvest import app as app_module
+
+    assert app_module.app._app is None
+
+
+def test_create_app_installs_explicit_cors_origins(monkeypatch):
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("CONSENSUSINVEST_EVIDENCE_STORE_BACKEND", "memory")
+    monkeypatch.setenv("CONSENSUSINVEST_ALLOW_IN_MEMORY_RUNTIME", "1")
+    monkeypatch.setenv(
+        "CONSENSUSINVEST_CORS_ORIGINS",
+        "http://localhost:5173, http://127.0.0.1:5173",
+    )
+
+    app = create_app()
+
+    cors = next(
+        middleware
+        for middleware in app.user_middleware
+        if middleware.cls.__name__ == "CORSMiddleware"
+    )
+    assert cors.kwargs["allow_origins"] == [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    assert cors.kwargs["allow_credentials"] is True
+
+
+def test_create_app_rejects_wildcard_cors_with_credentials(monkeypatch):
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", "openai/gpt-4.1-mini")
+    monkeypatch.setenv("CONSENSUSINVEST_EVIDENCE_STORE_BACKEND", "memory")
+    monkeypatch.setenv("CONSENSUSINVEST_ALLOW_IN_MEMORY_RUNTIME", "1")
+    monkeypatch.setenv("CONSENSUSINVEST_CORS_ORIGINS", "*")
+
+    with pytest.raises(RuntimeError, match="explicit origins"):
+        create_app()

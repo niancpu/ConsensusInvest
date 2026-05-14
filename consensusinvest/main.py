@@ -7,9 +7,11 @@ import os
 import uvicorn
 
 from .app import app  # re-exported so `uvicorn consensusinvest.main:app` also works
+from .runtime.env import load_local_env
 
 
 def run() -> None:
+    load_local_env()
     host = os.environ.get("CONSENSUSINVEST_HOST", "127.0.0.1")
     port = int(os.environ.get("CONSENSUSINVEST_PORT", "8000"))
     uvicorn.run(app, host=host, port=port)

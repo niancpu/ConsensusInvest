@@ -13,14 +13,24 @@ export type WorkflowStage =
 
 export type ReferenceRole = 'supports' | 'counters' | 'cited' | 'refuted'
 
+export interface WorkflowConfigAgent {
+  agent_id: string
+  role: string
+  stance_label: string
+  thesis_label: string
+  stance_output_key: string
+  impact_output_key: string
+  limitation: string
+}
+
 export interface WorkflowConfig {
   workflow_config_id: string
-  name: string
-  description: string
-  collectors: string[]
-  agents: string[]
+  name?: string
+  description?: string
+  collectors?: string[]
+  agents: WorkflowConfigAgent[]
   debate_rounds: number
-  enabled: boolean
+  enabled?: boolean
 }
 
 export interface WorkflowRunSummary {
@@ -35,11 +45,6 @@ export interface WorkflowRunSummary {
   judgment_id?: string
   final_signal?: string
   confidence?: number
-}
-
-export interface WorkflowRunListResponse {
-  items: WorkflowRunSummary[]
-  next_cursor?: string | null
 }
 
 export interface WorkflowRunDetail extends WorkflowRunSummary {
@@ -70,6 +75,7 @@ export interface WorkflowRunCreateRequest {
   options?: {
     stream?: boolean
     include_raw_payload?: boolean
+    auto_run?: boolean
   }
 }
 

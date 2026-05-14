@@ -16,7 +16,7 @@ const workflowConfigId = ref('')
 const lookbackDays = ref(30)
 const sources = ref('akshare,tushare,tavily,exa')
 
-const enabledConfigs = computed(() => configs.value.filter((item) => item.enabled))
+const enabledConfigs = computed(() => configs.value.filter((item) => item.enabled !== false))
 
 onMounted(async () => {
   isLoading.value = true
@@ -50,6 +50,7 @@ async function submitForm() {
       options: {
         stream: true,
         include_raw_payload: false,
+        auto_run: false,
       },
     })
 
@@ -99,7 +100,7 @@ async function submitForm() {
           <select v-model="workflowConfigId" name="workflowConfigId" required>
             <option disabled value="">请选择工作流配置</option>
             <option v-for="config in enabledConfigs" :key="config.workflow_config_id" :value="config.workflow_config_id">
-              {{ config.name }} · {{ config.workflow_config_id }}
+              {{ config.name ?? config.workflow_config_id }} · {{ config.workflow_config_id }}
             </option>
           </select>
         </label>

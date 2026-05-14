@@ -424,7 +424,7 @@ class WorkflowOrchestrator:
         )
         return self.repository.update_run(
             run.workflow_run_id,
-            status="insufficient_evidence",
+            status="failed",
             stage="failed",
             completed_at=_timestamp(run.analysis_time),
             evidence_gaps=gaps,
