@@ -79,6 +79,7 @@
 ```text
 queued
 running
+waiting
 partial_completed
 completed
 failed
@@ -87,6 +88,7 @@ cancelled
 
 约束：
 
+- `waiting` 表示任务已持久化且正在等待外部 provider、子任务、预算窗口或调度条件。
 - `partial_completed` 表示至少有部分结果可读取或已入库，不代表任务失败。
 - 重复提交同一 `idempotency_key` 时，返回已有 `task_id` 和当前状态。
 - 异步任务不得要求调用方同步等待完整结果；调用方应订阅事件或轮询状态。
@@ -98,7 +100,7 @@ cancelled
 ```json
 {
   "event_id": "evt_20260513_000001",
-  "event_type": "search.item_ingested",
+  "event_type": "evidence.item_saved",
   "occurred_at": "2026-05-13T11:00:12+08:00",
   "correlation_id": "corr_20260513_000001",
   "workflow_run_id": null,
@@ -117,7 +119,8 @@ cancelled
 | --- | --- | --- |
 | `search.task_queued` | Search Agent Pool | 搜索任务已接收。 |
 | `search.item_found` | Search Agent Worker | 找到原始信息项，但还未入库。 |
-| `search.item_ingested` | Evidence Store | 原始信息已产生 Raw/Evidence。 |
+| `evidence.raw_saved` | Evidence Store | 原始信息已持久化为 Raw Item。 |
+| `evidence.item_saved` | Evidence Store | Raw Item 已归一化为 Evidence。 |
 | `evidence.structure_saved` | Evidence Store | Evidence Structure 已保存。 |
 | `agent.argument_saved` | Agent Swarm | Agent 论点已保存。 |
 | `judge.tool_called` | Judge Runtime | Judge 回查了 Evidence/Raw。 |
@@ -130,10 +133,11 @@ cancelled
 | --- | --- | --- |
 | `search.task_queued` | `connector_progress` | 仅主 workflow 内搜索投影到 workflow SSE；无 `workflow_run_id` 的补齐不挂到 workflow SSE。 |
 | `search.source_started` | `connector_started` | 主 workflow 内某个 source 开始采集。 |
-| `search.item_found` | `raw_item_collected` | 仅表示发现原始项；最终可查询状态以 Raw/Evidence 资源为准。 |
+| `search.item_found` | `connector_progress` | 仅表示 Search Agent 找到候选原始项；未入库前不能投影成 Raw Item。 |
 | `search.source_failed` | `connector_progress` | 单个 source 失败不等于 workflow 失败；失败细节放在 payload。 |
 | `search.task_completed` | `connector_progress` | 搜索任务阶段状态提示；最终资源状态以查询接口为准。 |
-| `search.item_ingested` | `evidence_normalized` | Evidence Store 入库后才能对外暴露 Evidence ID。 |
+| `evidence.raw_saved` | `raw_item_collected` | Evidence Store 保存 Raw Item 后才能对外暴露 `raw_ref`。 |
+| `evidence.item_saved` | `evidence_normalized` | Evidence Store 生成 Evidence 后才能对外暴露 `evidence_id`。 |
 | `evidence.structure_saved` | `evidence_structured` | 结构化结果保存后投影。 |
 | `agent.argument_saved` | `agent_argument_completed` | Agent 论点持久化后投影；实时 delta 由运行时另行产生。 |
 | `round.summary_saved` | `round_summary_completed` | Round Summary 持久化后投影。 |

@@ -109,10 +109,10 @@ failed
 - 当前调用必须返回已有数据和 `data_state`，不得阻塞等待 Search Agent 完成。
 - 当 `refresh_policy` 允许且数据不足时，`build_stock_research_view` 可以在内部调用 `request_refresh`，并在响应中返回 `refresh_task_id`。
 - `refresh_task_id != null` 只表示已提交补齐任务，不表示新数据已经可用于当前响应。
-- `summary` 只能来自 Evidence Structure 的客观摘要、已有 Judgment 摘要，或对引用对象的模板化说明。
+- `summary` 只能来自 Evidence Structure 的客观摘要、已有 Judgment 摘要，或对引用对象的模板化说明；作为字符串字段时，必须能通过 `trace_refs` 回查来源。
 - `benefits` 在 `report_generation` 下必须为空；只有 `with_workflow_trace` 且存在 `judgment_id` 时才可从主 Judgment 投影。
 - `risks` 在 `report_generation` 下只能来自 Evidence Structure 中明确的客观风险披露或限制说明；不能由 Report Module 推断。
-- 所有 `summary`、`benefits`、`risks` 条目必须保留 `evidence_ids`、`market_snapshot_ids`、`workflow_run_id` 或 `judgment_id`。
+- `benefits`、`risks` 条目必须保留 `evidence_ids`、`market_snapshot_ids`、`workflow_run_id` 或 `judgment_id`；`summary` 必须通过 `trace_refs` 或后续 `summary_refs` 等价字段保留来源。
 - Report Module 不写主链路 `agent_arguments`、`judgments`。
 
 ## 2. report_generation 模式

@@ -165,6 +165,7 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
 - 无 `workflow_run_id` 时，可读取该股票最新可用的主链路 Judgment、Evidence、Entity 信息。
 - 若主链路没有结果，接口仍可返回 Entity / Evidence / MarketSnapshot 组成的 `report_generation` 轻量视图，但 `workflow_run_id` 和 `judgment_id` 为空。
 - 当 `judgment_id` 为空时，`action` 和 `benefits` 必须为空；Report Module 只能返回客观摘要、事件列表、Evidence Structure 中已有的风险披露、MarketSnapshot 和限制说明。
+- `report.summary` 作为字符串字段时，必须能通过 `trace_refs` 回查来源；不能生成没有 Evidence、MarketSnapshot、Workflow 或 Judgment 引用的孤立摘要。
 - 若 `refresh=missing` 或 `refresh=stale` 且数据不足，后端可以异步提交搜索/刷新请求，并返回 `data_state=refreshing` 和 `refresh_task_id`。
 - 该接口不启动 `workflow-runs`，也不生成主链路 Judgment。
 

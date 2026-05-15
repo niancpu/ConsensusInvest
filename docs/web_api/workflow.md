@@ -309,7 +309,7 @@ Workflow SSE 只覆盖有 `workflow_run_id` 的主分析链路事件。`report_g
 | `workflow_started` | 任务开始执行 |
 | `connector_started` | 某个 Source Connector 开始采集 |
 | `connector_progress` | Connector 采集进度 |
-| `raw_item_collected` | 新 Raw Item 已采集 |
+| `raw_item_collected` | 新 Raw Item 已入库 |
 | `evidence_normalized` | 新 Evidence 已归一化 |
 | `evidence_structuring_started` | Evidence Structuring Agent 开始处理 |
 | `evidence_structured` | Evidence 结构化结果已生成 |
@@ -339,10 +339,11 @@ Workflow SSE 只覆盖有 `workflow_run_id` 的主分析链路事件。`report_g
 | --- | --- |
 | `search.task_queued` | `connector_progress` |
 | `search.source_started` | `connector_started` |
-| `search.item_found` | `raw_item_collected` |
+| `search.item_found` | `connector_progress` |
 | `search.source_failed` | `connector_progress` |
 | `search.task_completed` | `connector_progress` |
-| `search.item_ingested` | `evidence_normalized` |
+| `evidence.raw_saved` | `raw_item_collected` |
+| `evidence.item_saved` | `evidence_normalized` |
 | `evidence.structure_saved` | `evidence_structured` |
 | `agent.argument_saved` | `agent_argument_completed` |
 | `round.summary_saved` | `round_summary_completed` |

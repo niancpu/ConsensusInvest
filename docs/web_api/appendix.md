@@ -72,10 +72,17 @@ GET /api/v1/workflow-configs
 ```text
 queued
 running
+waiting
+partial_completed
 completed
 failed
 cancelled
 ```
+
+前端注解：
+
+- `waiting` 表示任务在等待外部 provider、子任务、预算窗口或调度条件，仍属于非终态。
+- `partial_completed` 表示已有部分可用产物，同时仍存在失败来源或未完成步骤；前端应展示可用结果和限制说明，不要当作整体失败。
 
 ### 18.2 Workflow Stage
 

@@ -1,12 +1,13 @@
 ﻿# Evidence API
 
-本文档定义 Raw Item、Evidence、Evidence Structure 和 Evidence References。
+本文档定义 Raw Item、Evidence、Evidence Structure、Evidence References 和 MarketSnapshot 详情。
 
 ## 查询边界
 
 - `/workflow-runs/{workflow_run_id}/raw-items`、`/workflow-runs/{workflow_run_id}/evidence`、`/workflow-runs/{workflow_run_id}/evidence-references` 只查询某次主 workflow 关联的数据。
 - 跨 workflow 或无 workflow 的 Evidence 不新增按 `ticker` 直接查询入口；前端需要股票/实体维度证据时，使用 `GET /api/v1/entities/{entity_id}/evidence` 或 Report Module 视图接口。
 - 已知 `raw_ref` / `evidence_id` 时，可以直接使用详情接口下钻。
+- 列表和详情示例中的 `workflow_run_id` 是当前查询上下文或引用关系投影，不表示 Raw Item / Evidence Item 只能归属单个 workflow。
 
 ## 6. Raw Items
 
@@ -326,6 +327,48 @@ GET /api/v1/workflow-runs/{workflow_run_id}/evidence-references
 ## 12. MarketSnapshot 引用边界
 
 MarketSnapshot 由 Evidence Store 管理，但不是 Evidence。公开接口中出现 `market_snapshot_id` 时，只表示该视图引用了已入库市场快照。
+
+### 12.1 查询 MarketSnapshot 详情
+
+```http
+GET /api/v1/market-snapshots/{market_snapshot_id}
+```
+
+响应：
+
+```json
+{
+  "data": {
+    "market_snapshot_id": "mkt_snap_20260513_002594",
+    "snapshot_type": "stock_quote",
+    "ticker": "002594",
+    "entity_ids": ["ent_company_002594"],
+    "source": "akshare",
+    "snapshot_time": "2026-05-13T11:05:00+08:00",
+    "fetched_at": "2026-05-13T11:05:02+08:00",
+    "metrics": {
+      "price": 218.5,
+      "change_rate": 2.15,
+      "turnover_rate": 1.8,
+      "amount": 1234567890
+    },
+    "ingest_context": {
+      "task_id": "st_20260513_002594_market_0001",
+      "workflow_run_id": null,
+      "requested_by": "report_module"
+    }
+  },
+  "meta": {
+    "request_id": "req_20260513_100900"
+  }
+}
+```
+
+约束：
+
+- 该接口只读已入库 MarketSnapshot，不触发行情刷新。
+- `metrics` 只能表达行情、热度、成交、换手、预警等级等客观市场状态。
+- MarketSnapshot 详情不返回投资建议、交易动作或 Judge 置信度。
 
 前端注解：
 
