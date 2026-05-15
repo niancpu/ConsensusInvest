@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -157,14 +158,17 @@ def get_workflow_trace(
 
 @router.get("/workflow-runs/{workflow_run_id}/events")
 def stream_workflow_events(
+    request: Request,
     workflow_run_id: str,
     after_sequence: int | None = Query(None),
     include_snapshot: bool = Query(False),
+    follow: bool = Query(False),
     service: WorkflowOrchestrator = Depends(get_workflow_service),
 ) -> StreamingResponse:
     _required_run(service, workflow_run_id)
 
-    def iter_events() -> Any:
+    async def iter_events() -> Any:
+        last_sequence = after_sequence or 0
         if include_snapshot:
             snapshot = service.snapshot(workflow_run_id, max_evidence=20, max_arguments=20)
             payload = {
@@ -177,7 +181,13 @@ def stream_workflow_events(
             }
             yield _sse(payload)
         for event in service.list_events(workflow_run_id, after_sequence=after_sequence):
+            last_sequence = max(last_sequence, event.sequence)
             yield _sse(_event_view(event).model_dump())
+        while follow and not await request.is_disconnected():
+            await asyncio.sleep(1)
+            for event in service.list_events(workflow_run_id, after_sequence=last_sequence):
+                last_sequence = max(last_sequence, event.sequence)
+                yield _sse(_event_view(event).model_dump())
 
     return StreamingResponse(iter_events(), media_type="text/event-stream")
 
