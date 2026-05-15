@@ -14,6 +14,10 @@ wheels/
 .env.*
 !.env.example
 
+# Uvicorn runtime logs created during local development
+.uvicorn.err.log
+.uvicorn.out.log
+
 /AGENTS.md
 /CLAUDE.md
 start claude.bat
