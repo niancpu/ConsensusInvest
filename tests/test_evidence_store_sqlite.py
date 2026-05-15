@@ -204,6 +204,50 @@ class SQLiteEvidenceStoreTests(unittest.TestCase):
             self.assertEqual("duplicate_request", by_content.rejected_items[0].reason)
             store.close()
 
+    def test_duplicate_ingest_links_existing_evidence_to_new_workflow(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "evidence.db"
+            store = self.make_store(db_path)
+            first_envelope = self.make_envelope(idempotency_key="workflow_1")
+            second_envelope = InternalCallEnvelope(
+                request_id="req_sqlite_002",
+                correlation_id="corr_sqlite_002",
+                workflow_run_id="wr_second",
+                analysis_time=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+                requested_by="workflow_orchestrator",
+                idempotency_key="workflow_2",
+                trace_level="standard",
+            )
+
+            first_result = store.ingest_search_result(first_envelope, self.make_package(self.make_item()))
+            second_result = store.ingest_search_result(second_envelope, self.make_package(self.make_item()))
+            page = store.query_evidence(
+                second_envelope,
+                {
+                    "workflow_run_id": "wr_second",
+                    "ticker": "002594",
+                    "entity_ids": ["ent_company_002594"],
+                    "evidence_types": ["company_news"],
+                },
+            )
+
+            self.assertEqual(["ev_000001"], first_result.created_evidence_ids)
+            self.assertEqual("partial_accepted", second_result.status)
+            self.assertEqual(["ev_000001"], second_result.updated_evidence_ids)
+            self.assertEqual(1, page.total)
+            self.assertEqual("ev_000001", page.items[0].evidence_id)
+            store.close()
+
+            reopened = self.make_store(db_path)
+            reopened_page = reopened.query_evidence(
+                second_envelope,
+                {"workflow_run_id": "wr_second", "limit": 10},
+            )
+
+            self.assertEqual(1, reopened_page.total)
+            self.assertEqual("ev_000001", reopened_page.items[0].evidence_id)
+            reopened.close()
+
     def test_rejects_publish_time_after_analysis_time(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = self.make_store(Path(tmpdir) / "evidence.db")

@@ -4,7 +4,10 @@ from fastapi.testclient import TestClient
 
 from consensusinvest.app import create_app
 from consensusinvest.runtime import InternalCallEnvelope
+from consensusinvest.search_agent import SearchAgentPool
 from consensusinvest.search_agent.models import SearchResultPackage, SearchTarget
+from consensusinvest.search_agent.providers import MockSearchProvider
+from consensusinvest.workflow_orchestrator.acquisition import EvidenceAcquisitionService
 from consensusinvest.workflow_orchestrator.models import WorkflowOptions, WorkflowQuery, WorkflowRunCreate
 
 
@@ -60,6 +63,40 @@ def _seed_workflow_evidence(workflow_run_id: str, store) -> None:
 
 def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     client = TestClient(create_app())
+    runtime = client.app.state.runtime
+    runtime.agent_swarm.llm_provider = None
+    runtime.judge.llm_provider = None
+    runtime.workflow_service.acquisition = EvidenceAcquisitionService(
+        search_pool=SearchAgentPool(
+            providers={
+                "tavily": MockSearchProvider(
+                    items_by_source={
+                        "tavily": (
+                            {
+                                "external_id": "api_news_001",
+                                "title": "BYD margin improved",
+                                "url": "https://example.com/api/001",
+                                "content": "BYD reported margin improvement.",
+                                "publish_time": "2026-05-12T10:00:00+00:00",
+                                "source_quality_hint": 0.86,
+                                "metadata": {"evidence_type": "company_news"},
+                            },
+                            {
+                                "external_id": "api_news_002",
+                                "title": "BYD cash flow needs checking",
+                                "url": "https://example.com/api/002",
+                                "content": "BYD cash flow quality still needs checking.",
+                                "publish_time": "2026-05-12T11:00:00+00:00",
+                                "source_quality_hint": 0.74,
+                                "metadata": {"evidence_type": "company_news"},
+                            },
+                        )
+                    }
+                )
+            },
+            evidence_store=runtime.evidence_store,
+        )
+    )
 
     response = client.post(
         "/api/v1/workflow-runs",
@@ -81,7 +118,7 @@ def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     detail = client.get(f"/api/v1/workflow-runs/{workflow_run_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["data"]["workflow_run_id"] == workflow_run_id
-    assert detail.json()["data"]["status"] == "failed"
+    assert detail.json()["data"]["status"] == "completed"
 
     listing = client.get("/api/v1/workflow-runs", params={"ticker": "002594"})
     assert listing.status_code == 200, listing.text
@@ -96,7 +133,7 @@ def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     trace = client.get(f"/api/v1/workflow-runs/{workflow_run_id}/trace")
     assert trace.status_code == 200, trace.text
     assert trace.json()["data"]["workflow_run_id"] == workflow_run_id
-    assert isinstance(trace.json()["data"]["trace_nodes"], list)
+    assert trace.json()["data"]["trace_nodes"]
 
     events = client.get(f"/api/v1/workflow-runs/{workflow_run_id}/events")
     assert events.status_code == 200, events.text

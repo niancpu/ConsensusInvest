@@ -199,6 +199,7 @@ def test_real_providers_require_api_keys():
 def test_env_factory_registers_only_configured_real_providers(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.setenv("CONSENSUSINVEST_AKSHARE_ENABLED", "false")
     assert build_real_search_providers_from_env() == {}
 
     monkeypatch.setenv("TAVILY_API_KEY", "tv_key")
@@ -253,6 +254,280 @@ def test_akshare_provider_maps_optional_module_results():
     assert item["author"] == "东方财富"
     assert item["raw_payload"]["provider_api"] == "stock_news_em"
     assert item["raw_payload"]["provider_symbol"] == "002594"
+
+
+def test_akshare_provider_maps_index_intraday_to_market_snapshot():
+    class FakeAkShare:
+        def index_zh_a_hist_min_em(self, *, symbol, period):
+            assert symbol == "000001"
+            assert period == "1"
+            return FakeFrame(
+                [
+                    {
+                        "日期": "2026-05-13",
+                        "时间": "09:31",
+                        "收盘": 3121.5,
+                        "涨跌幅": 0.12,
+                        "成交量": 123456,
+                        "成交额": 123456789,
+                    }
+                ]
+            )
+
+    provider = AkShareSearchProvider(akshare_module=FakeAkShare())
+    task = SearchTask(
+        task_type="market_snapshot",
+        target={"entity_type": "market", "metadata": {"market_view": "index_intraday", "code": "000001.SH"}},
+        scope={
+            "sources": ["akshare"],
+            "evidence_types": ["index_quote", "market_snapshot"],
+            "max_results": 1,
+            "metadata": {"market_view": "index_intraday"},
+        },
+        constraints=make_task().constraints,
+    )
+
+    response = provider.search(make_envelope(), task)
+
+    item = response.items[0]
+    assert item["snapshot_type"] == "index_quote"
+    assert item["ticker"] == "000001"
+    assert item["snapshot_time"] == "2026-05-13T09:31:00"
+    assert item["metrics"]["code"] == "000001.SH"
+    assert item["metrics"]["name"] == "上证指数"
+    assert item["metrics"]["value"] == 3121.5
+    assert item["metrics"]["change_rate"] == 0.12
+    assert item["metrics"]["volume"] == 123456
+
+
+def test_akshare_provider_falls_back_to_eastmoney_index_intraday(monkeypatch):
+    class FakeAkShare:
+        def index_zh_a_hist_min_em(self, *, symbol, period):
+            raise ConnectionError("akshare eastmoney map disconnected")
+
+    class FakeResponse:
+        text = (
+            '{"rc":0,"data":{"code":"000001","name":"上证指数",'
+            '"preClose":3100.0,"trends":["2026-05-13 09:31,3101,3121.5,3122,3100,'
+            '123456,123456789,3110"]}}'
+        )
+
+        def raise_for_status(self):
+            return None
+
+    calls = []
+
+    def fake_get_ipv4(session, url, *, params, headers, timeout):
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(provider_module, "_requests_get_ipv4", fake_get_ipv4)
+    provider = AkShareSearchProvider(akshare_module=FakeAkShare())
+    task = SearchTask(
+        task_type="market_snapshot",
+        target={"entity_type": "market", "metadata": {"market_view": "index_intraday", "code": "000001.SH"}},
+        scope={
+            "sources": ["akshare"],
+            "evidence_types": ["index_quote", "market_snapshot"],
+            "max_results": 1,
+            "metadata": {"market_view": "index_intraday"},
+        },
+        constraints=make_task().constraints,
+    )
+
+    response = provider.search(make_envelope(), task)
+
+    item = response.items[0]
+    assert calls[0]["url"] == "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+    assert calls[0]["params"]["secid"] == "1.000001"
+    assert item["raw_payload"]["provider_api"] == "eastmoney_index_trends2"
+    assert item["snapshot_type"] == "index_quote"
+    assert item["snapshot_time"] == "2026-05-13T09:31:00"
+    assert item["metrics"]["code"] == "000001.SH"
+    assert item["metrics"]["value"] == 3121.5
+    assert item["metrics"]["previous_close"] == 3100.0
+
+
+def test_akshare_provider_retries_eastmoney_intraday_endpoints(monkeypatch):
+    class FakeAkShare:
+        def index_zh_a_hist_min_em(self, *, symbol, period):
+            raise ConnectionError("akshare disconnected")
+
+    class FakeResponse:
+        text = '{"rc":0,"data":{"code":"000001","name":"上证指数","trends":["2026-05-13 09:31,1,2,3,1,4,5,2"]}}'
+
+        def raise_for_status(self):
+            return None
+
+    calls = []
+
+    def fake_get_ipv4(session, url, *, params, headers, timeout):
+        calls.append(url)
+        if "push2his" in url:
+            raise provider_module.requests.ConnectionError("primary endpoint closed")
+        return FakeResponse()
+
+    monkeypatch.setattr(provider_module, "_requests_get_ipv4", fake_get_ipv4)
+    provider = AkShareSearchProvider(akshare_module=FakeAkShare())
+    task = SearchTask(
+        task_type="market_snapshot",
+        target={"entity_type": "market", "metadata": {"market_view": "index_intraday", "code": "000001.SH"}},
+        scope={
+            "sources": ["akshare"],
+            "evidence_types": ["index_quote", "market_snapshot"],
+            "max_results": 1,
+            "metadata": {"market_view": "index_intraday"},
+        },
+        constraints=make_task().constraints,
+    )
+
+    response = provider.search(make_envelope(), task)
+
+    assert calls == [
+        "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+        "https://80.push2.eastmoney.com/api/qt/stock/trends2/get",
+    ]
+    assert response.items[0]["raw_payload"]["provider_api"] == "eastmoney_index_trends2"
+
+
+def test_akshare_provider_falls_back_to_sina_index_intraday(monkeypatch):
+    class FakeAkShare:
+        def index_zh_a_hist_min_em(self, *, symbol, period):
+            raise ConnectionError("akshare disconnected")
+
+    def fake_eastmoney_records(task, ticker):
+        raise RuntimeError("eastmoney disconnected")
+
+    def fake_sina_json(url, params):
+        assert url == provider_module._SINA_INDEX_MINLINE_ENDPOINT
+        assert params["symbol"] == "sh000001"
+        return {
+            "result": {
+                "data": [
+                    {
+                        "m": "09:31:00",
+                        "p": "3121.5",
+                        "avg_p": "3110",
+                        "v": "123456",
+                        "tot_v": "123456789",
+                        "hlz": "0.12",
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(provider_module, "_eastmoney_index_intraday_records", fake_eastmoney_records)
+    monkeypatch.setattr(provider_module, "_sina_get_json", fake_sina_json)
+    monkeypatch.setattr(provider_module, "_sina_get_quote", lambda symbol: {"date": "2026-05-13"})
+    provider = AkShareSearchProvider(akshare_module=FakeAkShare())
+    task = SearchTask(
+        task_type="market_snapshot",
+        target={"entity_type": "market", "metadata": {"market_view": "index_intraday", "code": "000001.SH"}},
+        scope={
+            "sources": ["akshare"],
+            "evidence_types": ["index_quote", "market_snapshot"],
+            "max_results": 1,
+            "metadata": {"market_view": "index_intraday", "trade_date": "20260513"},
+        },
+        constraints=make_task().constraints,
+    )
+
+    response = provider.search(make_envelope(), task)
+
+    item = response.items[0]
+    assert item["raw_payload"]["provider_api"] == "sina_index_minline"
+    assert item["snapshot_time"] == "2026-05-13T09:31:00"
+    assert item["metrics"]["code"] == "000001.SH"
+    assert item["metrics"]["name"] == "上证指数"
+    assert item["metrics"]["value"] == 3121.5
+    assert item["metrics"]["change_rate"] == 0.12
+
+
+def test_sina_trade_date_reads_quote_date(monkeypatch):
+    class FakeResponse:
+        text = 'var hq_str_sh000001="上证指数,4174.1750,4177.9175,4135.3894,4191.8068,4114.0856,0,0,733162357,1519240026459,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2026-05-15,15:30:39,00,";'
+
+        def raise_for_status(self):
+            return None
+
+    class FakeSession:
+        trust_env = True
+
+        def get(self, url, *, headers, timeout):
+            assert url == "https://hq.sinajs.cn/list=sh000001"
+            return FakeResponse()
+
+    monkeypatch.setattr(provider_module.requests, "Session", lambda: FakeSession())
+
+    assert provider_module._sina_get_quote("sh000001") == {"date": "2026-05-15"}
+
+
+def test_eastmoney_json_uses_curl_fallback_when_requests_disconnects(monkeypatch):
+    monkeypatch.setattr(provider_module.shutil, "which", lambda name: "curl.exe")
+
+    def fake_requests_get_ipv4(session, url, *, params, headers, timeout):
+        raise provider_module.requests.ConnectionError("remote disconnected")
+
+    class FakeCompleted:
+        returncode = 0
+        stderr = ""
+        stdout = '{"rc":0,"data":{"trends":["2026-05-13 09:31,1,2,3,1,4,5,2"]}}'
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, "kwargs": kwargs})
+        return FakeCompleted()
+
+    monkeypatch.setattr(provider_module, "_requests_get_ipv4", fake_requests_get_ipv4)
+    monkeypatch.setattr(provider_module.subprocess, "run", fake_run)
+
+    response = provider_module._eastmoney_get_json(
+        "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+        {
+            "secid": "1.000001",
+            "fields1": "f1",
+            "fields2": "f51",
+            "iscr": "0",
+            "ndays": "1",
+        },
+    )
+
+    assert response["data"]["trends"][0].startswith("2026-05-13")
+    assert calls[0]["command"][0] == "curl.exe"
+    assert "-4" in calls[0]["command"]
+    assert "shell" not in calls[0]["kwargs"]
+
+
+def test_eastmoney_json_accepts_curl_body_with_schannel_exit(monkeypatch):
+    monkeypatch.setattr(provider_module.shutil, "which", lambda name: "curl.exe")
+    monkeypatch.setattr(
+        provider_module,
+        "_requests_get_ipv4",
+        lambda session, url, *, params, headers, timeout: (_ for _ in ()).throw(
+            provider_module.requests.ConnectionError("remote disconnected")
+        ),
+    )
+
+    class FakeCompleted:
+        returncode = 56
+        stderr = "curl: (56) schannel: server closed abruptly"
+        stdout = '{"rc":0,"data":{"trends":["2026-05-13 09:31,1,2,3,1,4,5,2"]}}'
+
+    monkeypatch.setattr(provider_module.subprocess, "run", lambda *args, **kwargs: FakeCompleted())
+
+    response = provider_module._eastmoney_get_json(
+        "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+        {
+            "secid": "1.000001",
+            "fields1": "f1",
+            "fields2": "f51",
+            "iscr": "0",
+            "ndays": "1",
+        },
+    )
+
+    assert response["data"]["trends"][0].startswith("2026-05-13")
 
 
 def test_tushare_provider_maps_optional_client_results():

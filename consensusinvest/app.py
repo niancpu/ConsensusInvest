@@ -15,6 +15,7 @@ from consensusinvest.entities.router import router as entities_router
 from consensusinvest.evidence_store.router import router as evidence_router
 from consensusinvest.runtime.env import load_local_env
 from consensusinvest.runtime.wiring import build_runtime
+from consensusinvest.search_agent.router import router as search_agent_router
 from consensusinvest.workflow_orchestrator.router import router as workflow_router
 from consensusinvest.workflow_configs.router import router as workflow_configs_router
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(entities_router)
     app.include_router(workflow_configs_router)
     app.include_router(agent_swarm_router)
+    app.include_router(search_agent_router)
     app.include_router(report_module_router)
 
     @app.get("/health", tags=["meta"])

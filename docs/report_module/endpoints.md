@@ -7,7 +7,7 @@
 ## 阅读顺序
 
 1. [Stock Research View API](./stock_research.md)：股票搜索、个股研究聚合视图、行业详情、事件影响、利好风险。
-2. [Market API](./market.md)：指数看板、市场股票列表、概念雷达、市场预警。
+2. [Market API](./market.md)：指数看板、指数日内走势、市场股票列表、概念雷达、市场预警。
 3. [Migration And Cut Rules](./compatibility.md)：旧 `fontWebUI` 接口迁移、裁切和删除规则。
 
 ## 融合边界

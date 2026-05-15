@@ -232,6 +232,31 @@ class IndexOverview(TraceableModel):
     updated_at: str
 
 
+class IndexIntradayPoint(TraceableModel):
+    time: str
+    timestamp: str
+    value: float
+    change: float | None = None
+    change_rate: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+
+
+class IndexIntradayView(TraceableModel):
+    code: str
+    name: str
+    trade_date: str
+    points: list[IndexIntradayPoint] = Field(default_factory=list)
+    previous_close: float | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    snapshot_ids: list[str] = Field(default_factory=list)
+    data_state: DataState
+    refresh_task_id: str | None = None
+    updated_at: str
+
+
 # -- Market: stocks --------------------------------------------------------
 
 

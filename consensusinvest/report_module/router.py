@@ -8,6 +8,7 @@ Endpoints (per `docs/report_module/`):
 - GET /api/v1/stocks/{stock_code}/event-impact-ranking
 - GET /api/v1/stocks/{stock_code}/benefits-risks
 - GET /api/v1/market/index-overview
+- GET /api/v1/market/index-intraday
 - GET /api/v1/market/stocks
 - GET /api/v1/market/concept-radar
 - GET /api/v1/market/warnings
@@ -24,6 +25,7 @@ from .schemas import (
     BenefitsRisksView,
     ConceptRadarItem,
     EventImpactRankingView,
+    IndexIntradayView,
     IndexOverview,
     IndustryDetailsView,
     MarketStocksList,
@@ -139,6 +141,19 @@ def get_index_overview(
     overview, refresh_task_id = service.build_index_overview(reader=reader, refresh=refresh)
     return SingleResponse[IndexOverview](
         data=overview,
+        meta=Meta(refresh_task_id=refresh_task_id),
+    )
+
+
+@router.get("/market/index-intraday", response_model=SingleResponse[IndexIntradayView])
+def get_index_intraday(
+    code: str = Query("000001.SH", description="指数代码，默认上证指数。"),
+    refresh: RefreshPolicy = Query(RefreshPolicy.STALE),
+    reader: service.ReportRuntimeReader = Depends(get_report_reader),
+) -> SingleResponse[IndexIntradayView]:
+    view, refresh_task_id = service.build_index_intraday(reader=reader, code=code, refresh=refresh)
+    return SingleResponse[IndexIntradayView](
+        data=view,
         meta=Meta(refresh_task_id=refresh_task_id),
     )
 

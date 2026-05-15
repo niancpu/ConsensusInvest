@@ -76,7 +76,60 @@ GET /api/v1/market/index-overview?refresh=stale
 - 旧字段 `changeRate/aiSentiment/updatedAt` 在本项目中统一改为 snake_case；`aiSentiment` 对应 `market_sentiment`，不保留 AI 投资判断语义。
 - 如果复用旧前端组件，应在 API client 层做字段适配。
 
-## 3. 查询市场股票列表
+## 3. 查询指数日内走势
+
+```http
+GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale
+```
+
+查询参数：
+
+| 参数 | 必填 | 含义 |
+| --- | --- | --- |
+| `code` | 否 | 指数代码，默认 `000001.SH`。 |
+| `refresh` | 否 | `never`、`missing`、`stale`；默认 `stale`。允许后端在数据缺失或过期时异步触发刷新。 |
+
+响应：
+
+```json
+{
+  "data": {
+    "code": "000001.SH",
+    "name": "上证指数",
+    "trade_date": "2026-05-13",
+    "points": [
+      {
+        "time": "09:30",
+        "timestamp": "2026-05-13T09:30:00+08:00",
+        "value": 3120.55,
+        "change": 1.23,
+        "change_rate": 0.04,
+        "volume": 12345600,
+        "amount": 1234567890
+      }
+    ],
+    "previous_close": 3119.32,
+    "open": 3120.1,
+    "high": 3130,
+    "low": 3115.2,
+    "snapshot_ids": ["mkt_snap_20260513_000001_intraday"],
+    "data_state": "ready",
+    "refresh_task_id": null,
+    "updated_at": "2026-05-13T15:00:00+08:00"
+  },
+  "meta": {
+    "request_id": "req_20260513_120005"
+  }
+}
+```
+
+前端注解：
+
+- 首页指数走势图必须使用本接口的 `points` 绘制，不能使用静态占位点。
+- 本接口只投影已入库 `MarketSnapshot`。当 `data_state=pending_refresh` 或 `refreshing` 时，前端应展示空态或刷新状态，而不是伪造曲线。
+- 日内点可以来自单个 `index_quote.metrics.intraday_points`，也可以来自多个 `index_quote` 快照按时间拼接。
+
+## 4. 查询市场股票列表
 
 ```http
 GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
@@ -121,7 +174,7 @@ GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
 - `view_score` 和 `view_label` 是基于 MarketSnapshot 的页面排序/展示字段，不是主链路投资建议。
 - 点击“分析”时应跳转到创建或选择 `workflow_run` 的流程。
 
-## 4. 查询概念雷达
+## 5. 查询概念雷达
 
 ```http
 GET /api/v1/market/concept-radar?limit=20&refresh=stale
@@ -156,7 +209,7 @@ GET /api/v1/market/concept-radar?limit=20&refresh=stale
 - `evidence_ids` 为空时，说明它只是市场快照层的视图，还没有进入 Evidence 链路。
 - 如果用户点进概念分析，应通过主 workflow 生成可追踪分析链路。
 
-## 5. 查询市场预警
+## 6. 查询市场预警
 
 ```http
 GET /api/v1/market/warnings?limit=10&severity=notice&refresh=stale

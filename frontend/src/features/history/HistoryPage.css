@@ -1,0 +1,107 @@
+.history-page {
+  min-height: 100vh;
+  border: 1px solid #000000;
+  background: #ffffff;
+  color: #000000;
+}
+
+.history-nav {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 2fr;
+  align-items: center;
+  min-height: 72px;
+  border-bottom: 2px solid #000000;
+}
+
+.history-layout {
+  min-height: calc(100vh - 72px);
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 0;
+}
+
+.history-list {
+  padding: 42px 32px;
+  border-right: 1px solid #000000;
+}
+
+.history-list h1 {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(42px, 4vw, 68px);
+}
+
+.history-list p {
+  margin: 18px 0 26px;
+  line-height: 1.6;
+}
+
+.history-row {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid #000000;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-row strong,
+.history-row span,
+.history-row small {
+  display: block;
+}
+
+.history-row strong {
+  font-size: 16px;
+}
+
+.history-detail {
+  padding: 42px;
+}
+
+.history-detail h2 {
+  margin: 0;
+  font-size: 34px;
+}
+
+.history-detail dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 16px;
+  margin: 30px 0;
+}
+
+.history-detail dt {
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.history-detail dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.history-error {
+  margin-top: 16px;
+  color: #b91c1c;
+}
+
+@media (max-width: 760px) {
+  .history-layout {
+    display: block;
+  }
+
+  .history-list {
+    border-right: 0;
+    border-bottom: 1px solid #000000;
+    padding: 32px 22px;
+  }
+
+  .history-detail {
+    padding: 32px 22px;
+  }
+}

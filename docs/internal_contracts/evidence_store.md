@@ -39,6 +39,7 @@ EvidenceStore.ingest_search_result(envelope: InternalCallEnvelope, package: Sear
 | Raw 必须可回溯 | 保存 `url` 或等价来源定位字段，并保留 `raw_payload` 或可复查摘要。 |
 | Evidence 必须带 `raw_ref` | 任何 Evidence 都必须能回查到 Raw Item。 |
 | 去重不能只按标题 | 至少结合 `url`、`source`、`publish_time`、内容 hash、实体命中。 |
+| 重复命中要保留 workflow 关联 | 已存在 Evidence 被新的主 workflow 搜索命中时，不复制 Evidence，但必须把既有 `evidence_id` 关联到当前 `workflow_run_id`，并计入 `updated_evidence_ids`。 |
 | 质量可拒绝但要留原因 | `rejected_items` 必须包含机器可读 `reason`。 |
 | 不做投资解释 | 入库阶段不能写入 `bullish`、`bearish`、`buy`、`sell` 等立场字段。 |
 

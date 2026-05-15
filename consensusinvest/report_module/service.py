@@ -49,6 +49,8 @@ from .schemas import (
     IndexOverview,
     IndexQuote,
     IndustryDetailsView,
+    IndexIntradayPoint,
+    IndexIntradayView,
     KeyEvidence,
     MarketSentiment,
     MarketStockRow,
@@ -164,6 +166,19 @@ class ReportRuntimeReader:
         page = self.evidence_store.query_market_snapshots(
             _query_envelope(),
             MarketSnapshotQuery(snapshot_types=snapshot_types, limit=limit, offset=0),
+        )
+        return page.items
+
+    def market_snapshots_for_ticker(
+        self,
+        ticker: str,
+        snapshot_types: tuple[str, ...],
+        *,
+        limit: int = 50,
+    ) -> list[MarketSnapshot]:
+        page = self.evidence_store.query_market_snapshots(
+            _query_envelope(),
+            MarketSnapshotQuery(ticker=ticker, snapshot_types=snapshot_types, limit=limit, offset=0),
         )
         return page.items
 
@@ -587,6 +602,85 @@ def build_index_overview(
         refresh_task_id=refresh_task_id,
     )
     return overview, refresh_task_id
+
+
+def build_index_intraday(
+    *,
+    reader: ReportRuntimeReader,
+    code: str,
+    refresh: RefreshPolicy,
+) -> tuple[IndexIntradayView, str | None]:
+    normalized_code = _normalize_index_code(code)
+    ticker = _index_ticker(normalized_code)
+    matching = _index_intraday_snapshots(reader, normalized_code, ticker)
+    points = _intraday_points_from_snapshots(matching)
+    data_state = DataState.READY if points else DataState.MISSING
+    refresh_task_id = None
+    report_run_id = _report_run_id(reader, f"INDEX_INTRADAY_{ticker}")
+    if not points and refresh in {RefreshPolicy.MISSING, RefreshPolicy.STALE}:
+        data_state = DataState.PENDING_REFRESH
+        refresh_task_id = _request_market_refresh(
+            reader=reader,
+            market_view="index_intraday",
+            reason="missing",
+            report_run_id=report_run_id,
+            metadata={"code": normalized_code, "ticker": ticker},
+        )
+        if (
+            refresh_task_id
+            and _market_refresh_can_run_now(reader.search_pool, market_view="index_intraday")
+            and _run_refresh_task_once(reader, refresh_task_id)
+        ):
+            matching = _index_intraday_snapshots(reader, normalized_code, ticker)
+            points = _intraday_points_from_snapshots(matching)
+            if points:
+                data_state = DataState.READY
+            elif _search_task_status(reader, refresh_task_id) in {"failed", "cancelled"}:
+                data_state = DataState.FAILED
+            else:
+                data_state = DataState.MISSING
+        elif refresh_task_id and _search_task_status(reader, refresh_task_id) in {"failed", "cancelled"}:
+            data_state = DataState.FAILED
+
+    latest = matching[0] if matching else None
+    view = IndexIntradayView(
+        code=normalized_code,
+        name=str(latest.metrics.get("name") or _index_name(normalized_code)) if latest else _index_name(normalized_code),
+        trade_date=_trade_date(points, latest),
+        points=points,
+        previous_close=_float_or_none(latest.metrics.get("previous_close")) if latest else None,
+        open=_float_or_none(latest.metrics.get("open")) if latest else None,
+        high=_float_or_none(latest.metrics.get("high")) if latest else None,
+        low=_float_or_none(latest.metrics.get("low")) if latest else None,
+        snapshot_ids=_dedupe(snapshot.market_snapshot_id for snapshot in matching),
+        data_state=data_state,
+        refresh_task_id=refresh_task_id,
+        updated_at=_dt(latest.snapshot_time) if latest else _now_iso(),
+    )
+    output_snapshot = _jsonable(view)
+    if refresh_task_id is not None:
+        output_snapshot["refresh_task_id"] = refresh_task_id
+    _save_report_run(
+        reader=reader,
+        report_run_id=report_run_id,
+        ticker=f"INDEX_INTRADAY_{ticker}",
+        stock_code=None,
+        report_mode=ReportMode.REPORT_GENERATION,
+        data_state=view.data_state,
+        workflow_run_id=None,
+        judgment_id=None,
+        entity_id=None,
+        input_refs=_input_refs(
+            evidence_ids=[],
+            market_snapshot_ids=view.snapshot_ids,
+            workflow_run_id=None,
+            judgment_id=None,
+        ),
+        output_snapshot=output_snapshot,
+        limitations=_market_limitations(),
+        refresh_task_id=refresh_task_id,
+    )
+    return view, refresh_task_id
 
 
 def build_market_stocks(
@@ -1252,7 +1346,7 @@ def _request_market_refresh(
                 metadata=task_metadata,
             ),
             scope=SearchScope(
-                sources=_stock_refresh_sources(reader.search_pool),
+                sources=_market_refresh_sources(reader.search_pool, market_view=market_view),
                 evidence_types=_market_refresh_evidence_types(market_view),
                 lookback_days=3,
                 max_results=50,
@@ -1293,6 +1387,8 @@ def _market_refresh_idempotency_key(*, market_view: str, analysis_time: datetime
 def _market_refresh_query(market_view: str) -> str:
     if market_view == "index_overview":
         return "A股主要指数行情与市场情绪快照"
+    if market_view == "index_intraday":
+        return "A股主要指数日内走势快照"
     if market_view == "market_stocks":
         return "A股市场股票行情列表快照"
     return "A股市场行情快照"
@@ -1302,6 +1398,14 @@ def _market_refresh_keywords(market_view: str, *, metadata: dict[str, Any]) -> t
     values: list[str] = ["A股", "市场行情"]
     if market_view == "index_overview":
         values.extend(["上证指数", "深证成指", "创业板指", "市场情绪"])
+    elif market_view == "index_intraday":
+        values.extend(["上证指数", "指数分时", "日内走势"])
+        code = metadata.get("code")
+        ticker = metadata.get("ticker")
+        if code:
+            values.append(str(code))
+        if ticker:
+            values.append(str(ticker))
     elif market_view == "market_stocks":
         values.extend(["股票行情", "涨跌幅", "市场股票列表"])
         keyword = metadata.get("keyword")
@@ -1313,6 +1417,8 @@ def _market_refresh_keywords(market_view: str, *, metadata: dict[str, Any]) -> t
 def _market_refresh_evidence_types(market_view: str) -> tuple[str, ...]:
     if market_view == "index_overview":
         return ("index_quote", "market_sentiment", "market_snapshot")
+    if market_view == "index_intraday":
+        return ("index_quote", "market_snapshot")
     if market_view == "market_stocks":
         return ("stock_quote", "market_snapshot")
     return ("market_snapshot",)
@@ -1339,6 +1445,55 @@ def _stock_refresh_sources(search_pool: Any) -> tuple[str, ...]:
     if source:
         return (str(source),)
     return ("tavily", "exa")
+
+
+def _market_refresh_sources(search_pool: Any, *, market_view: str) -> tuple[str, ...]:
+    providers = getattr(search_pool, "providers", None)
+    if market_view in {"index_overview", "index_intraday", "market_stocks"}:
+        if isinstance(providers, dict) and "akshare" in providers:
+            return ("akshare",)
+        provider = getattr(search_pool, "provider", None)
+        source = getattr(provider, "source", None)
+        if source == "akshare":
+            return ("akshare",)
+        return ("akshare",)
+    return _stock_refresh_sources(search_pool)
+
+
+def _market_refresh_can_run_now(search_pool: Any, *, market_view: str) -> bool:
+    if search_pool is None or market_view not in {"index_overview", "index_intraday", "market_stocks"}:
+        return False
+    providers = getattr(search_pool, "providers", None)
+    if isinstance(providers, dict):
+        return "akshare" in providers
+    provider = getattr(search_pool, "provider", None)
+    return getattr(provider, "source", None) == "akshare"
+
+
+def _run_refresh_task_once(reader: ReportRuntimeReader, refresh_task_id: str) -> bool:
+    search_pool = reader.search_pool
+    if search_pool is None:
+        return False
+    run_task_once = getattr(search_pool, "run_task_once", None)
+    if callable(run_task_once):
+        return bool(run_task_once(refresh_task_id))
+    run_pending_once = getattr(search_pool, "run_pending_once", None)
+    if callable(run_pending_once):
+        return refresh_task_id in set(str(task_id) for task_id in run_pending_once())
+    return False
+
+
+def _search_task_status(reader: ReportRuntimeReader, refresh_task_id: str) -> str | None:
+    search_pool = reader.search_pool
+    repository = getattr(search_pool, "repository", None)
+    get_task_status = getattr(repository, "get_task_status", None)
+    if not callable(get_task_status):
+        return None
+    status = get_task_status(refresh_task_id)
+    if isinstance(status, dict):
+        status = status.get("status")
+    value = getattr(status, "value", status)
+    return str(value) if value else None
 
 
 def _task_id(receipt: Any) -> str | None:
@@ -1419,6 +1574,118 @@ def _snapshot_matches_keyword(snapshot: MarketSnapshot, keyword: str | None) -> 
         str(snapshot.metrics.get("name") or ""),
     ]
     return any(needle in value.lower() for value in values)
+
+
+def _normalize_index_code(code: str) -> str:
+    text = code.strip().upper()
+    if text in {"000001", "SH000001"}:
+        return "000001.SH"
+    if text in {"399001", "SZ399001"}:
+        return "399001.SZ"
+    if text in {"399006", "SZ399006"}:
+        return "399006.SZ"
+    if "." in text:
+        left, right = text.split(".", 1)
+        return f"{left}.{right}"
+    suffix = "SH" if text.startswith(("0", "5", "6", "9")) else "SZ"
+    return f"{text}.{suffix}"
+
+
+def _index_ticker(code: str) -> str:
+    return code.split(".", 1)[0]
+
+
+def _index_name(code: str) -> str:
+    return {
+        "000001.SH": "上证指数",
+        "399001.SZ": "深证成指",
+        "399006.SZ": "创业板指",
+    }.get(code, code)
+
+
+def _index_intraday_snapshots(
+    reader: ReportRuntimeReader,
+    normalized_code: str,
+    ticker: str,
+) -> list[MarketSnapshot]:
+    snapshots = reader.market_snapshots_for_ticker(ticker, ("index_quote",), limit=500)
+    return [
+        snapshot
+        for snapshot in snapshots
+        if _normalize_index_code(str(snapshot.metrics.get("code") or snapshot.ticker or "")) == normalized_code
+    ]
+
+
+def _intraday_points_from_snapshots(snapshots: list[MarketSnapshot]) -> list[IndexIntradayPoint]:
+    if not snapshots:
+        return []
+    latest = snapshots[0]
+    raw_points = latest.metrics.get("intraday_points")
+    if isinstance(raw_points, list) and raw_points:
+        points = [_intraday_point_from_mapping(item, latest) for item in raw_points if isinstance(item, dict)]
+        return [point for point in points if point is not None]
+
+    points: list[IndexIntradayPoint] = []
+    for snapshot in reversed(snapshots):
+        value = _float_or_none(snapshot.metrics.get("value") or snapshot.metrics.get("close") or snapshot.metrics.get("price"))
+        if value is None:
+            continue
+        timestamp = _dt(snapshot.snapshot_time)
+        points.append(
+            IndexIntradayPoint(
+                time=_point_time(timestamp),
+                timestamp=timestamp,
+                value=value,
+                change=_float_or_none(snapshot.metrics.get("change")),
+                change_rate=_float_or_none(snapshot.metrics.get("change_rate")),
+                volume=_float_or_none(snapshot.metrics.get("volume")),
+                amount=_float_or_none(snapshot.metrics.get("amount")),
+            )
+        )
+    return points
+
+
+def _intraday_point_from_mapping(item: dict[str, Any], snapshot: MarketSnapshot) -> IndexIntradayPoint | None:
+    value = _float_or_none(item.get("value") or item.get("close") or item.get("price"))
+    if value is None:
+        return None
+    timestamp = str(item.get("timestamp") or item.get("datetime") or item.get("time") or _dt(snapshot.snapshot_time))
+    return IndexIntradayPoint(
+        time=str(item.get("time") or _point_time(timestamp)),
+        timestamp=timestamp,
+        value=value,
+        change=_float_or_none(item.get("change")),
+        change_rate=_float_or_none(item.get("change_rate")),
+        volume=_float_or_none(item.get("volume")),
+        amount=_float_or_none(item.get("amount")),
+    )
+
+
+def _point_time(timestamp: str) -> str:
+    if "T" in timestamp:
+        return timestamp.split("T", 1)[1][:5]
+    if " " in timestamp:
+        return timestamp.split(" ", 1)[1][:5]
+    return timestamp[:5]
+
+
+def _trade_date(points: list[IndexIntradayPoint], snapshot: MarketSnapshot | None) -> str:
+    if points:
+        timestamp = points[-1].timestamp
+        if "T" in timestamp:
+            return timestamp.split("T", 1)[0]
+        if " " in timestamp:
+            return timestamp.split(" ", 1)[0]
+    if snapshot and snapshot.snapshot_time is not None:
+        return snapshot.snapshot_time.date().isoformat()
+    return ""
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _trend(value: object) -> str:

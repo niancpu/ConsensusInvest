@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
+import os
 from typing import Any
 from uuid import uuid4
 
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
-from consensusinvest.agent_swarm.models import EvidenceSelection, JudgeToolAccess
+from consensusinvest.agent_swarm.models import EvidenceGap, EvidenceSelection, JudgeToolAccess, SuggestedSearch
 from consensusinvest.evidence_store import EvidenceQuery, EvidenceStoreClient
 from consensusinvest.evidence_structuring import EvidenceStructuringAgent
 from consensusinvest.runtime import InternalCallEnvelope
@@ -88,6 +89,14 @@ class WorkflowOrchestrator:
         self.repository.append_event(workflow_run_id, "workflow_started", {}, created_at=started_at)
         run = self.repository.update_run(workflow_run_id, stage="evidence_selection")
         evidence_ids = self._select_evidence(run)
+        if not evidence_ids:
+            run, evidence_ids = self._collect_initial_evidence(run)
+            if not evidence_ids and run.search_task_ids:
+                return self._mark_failed(
+                    run,
+                    "evidence_acquisition_failed",
+                    "No Evidence was ingested after the initial workflow acquisition task.",
+                )
         run = self.repository.update_run(workflow_run_id, stage="structuring_evidence")
         self._structure_selected_evidence(run, evidence_ids)
         progress = WorkflowProgress(
@@ -100,17 +109,24 @@ class WorkflowOrchestrator:
 
         envelope = self._envelope(run, suffix="agent_swarm")
         self.repository.update_run(workflow_run_id, stage="debate")
-        swarm_outcome = self.agent_swarm.run(
-            envelope,
-            {
-                "workflow_run_id": workflow_run_id,
-                "ticker": run.ticker,
-                "entity_id": run.entity_id,
-                "workflow_config_id": run.workflow_config_id,
-                "evidence_selection": EvidenceSelection(evidence_ids=tuple(evidence_ids)),
-                "history": {"previous_judgment_ids": []},
-            },
-        )
+        try:
+            swarm_outcome = self.agent_swarm.run(
+                envelope,
+                {
+                    "workflow_run_id": workflow_run_id,
+                    "ticker": run.ticker,
+                    "entity_id": run.entity_id,
+                    "workflow_config_id": run.workflow_config_id,
+                    "evidence_selection": EvidenceSelection(evidence_ids=tuple(evidence_ids)),
+                    "history": {"previous_judgment_ids": []},
+                },
+            )
+        except Exception as exc:
+            return self._mark_failed(
+                run,
+                "agent_swarm_failed",
+                _runtime_error_message(exc, stage="Agent Swarm"),
+            )
         if swarm_outcome.status == "insufficient_evidence":
             return self._mark_insufficient(run, tuple(swarm_outcome.gaps))
         for argument_id in swarm_outcome.agent_argument_ids:
@@ -145,16 +161,23 @@ class WorkflowOrchestrator:
         self.repository.update_run(workflow_run_id, progress=progress, stage="judge")
         self.repository.append_event(workflow_run_id, "judge_started", {}, created_at=_timestamp(run.analysis_time))
 
-        judge_outcome = self.judge.run(
-            self._envelope(run, suffix="judge"),
-            {
-                "workflow_run_id": workflow_run_id,
-                "round_summary_ids": list(round_summary_ids),
-                "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
-                "key_evidence_ids": evidence_ids,
-                "tool_access": JudgeToolAccess(),
-            },
-        )
+        try:
+            judge_outcome = self.judge.run(
+                self._envelope(run, suffix="judge"),
+                {
+                    "workflow_run_id": workflow_run_id,
+                    "round_summary_ids": list(round_summary_ids),
+                    "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                    "key_evidence_ids": evidence_ids,
+                    "tool_access": JudgeToolAccess(),
+                },
+            )
+        except Exception as exc:
+            return self._mark_failed(
+                run,
+                "judge_failed",
+                _runtime_error_message(exc, stage="Judge"),
+            )
         if judge_outcome.status == "insufficient_evidence":
             return self._mark_insufficient(run, tuple(judge_outcome.gaps))
         judgment = self.agent_swarm.repository.get_judgment(judge_outcome.judgment_id or "")
@@ -337,6 +360,72 @@ class WorkflowOrchestrator:
     def _select_evidence(self, run: WorkflowRunRecord) -> list[str]:
         return [item.evidence_id for item in self._query_evidence(run, limit=run.query.max_results)]
 
+    def _collect_initial_evidence(self, run: WorkflowRunRecord) -> tuple[WorkflowRunRecord, list[str]]:
+        search_pool = getattr(self.acquisition, "search_pool", None)
+        if search_pool is None:
+            return run, []
+
+        self.repository.update_run(run.workflow_run_id, stage="collecting_raw_items")
+        self.repository.append_event(
+            run.workflow_run_id,
+            "connector_started",
+            {"sources": list(run.query.sources), "reason": "initial_evidence_acquisition"},
+            created_at=_timestamp(run.analysis_time),
+        )
+        gap = EvidenceGap(
+            gap_type="missing_initial_evidence",
+            description="No ingested Evidence matched the workflow query before Agent Swarm.",
+            suggested_search=SuggestedSearch(
+                target_entity_ids=(run.entity_id,) if run.entity_id else (),
+                evidence_types=run.query.evidence_types,
+                lookback_days=run.query.lookback_days,
+                keywords=(run.stock_code or run.ticker, run.ticker),
+            ),
+        )
+        try:
+            receipt = self.acquisition.request_gap_fill(
+                self._envelope(run, suffix="initial_evidence"),
+                build_gap_fill_request(
+                    workflow_run_id=run.workflow_run_id,
+                    gap=gap,
+                    ticker=run.ticker,
+                    stock_code=run.stock_code,
+                    entity_id=run.entity_id,
+                    query=run.query,
+                ),
+            )
+        except RuntimeError as exc:
+            self.repository.append_event(
+                run.workflow_run_id,
+                "connector_progress",
+                {
+                    "status": "failed",
+                    "reason": "initial_evidence_acquisition_unavailable",
+                    "message": str(exc),
+                },
+                created_at=_timestamp(run.analysis_time),
+            )
+            return run, []
+
+        task_id = _value(receipt, "task_id")
+        if task_id is None:
+            return run, []
+
+        run_task_once = getattr(search_pool, "run_task_once", None)
+        if callable(run_task_once):
+            run_task_once(str(task_id))
+        self.repository.append_event(
+            run.workflow_run_id,
+            "connector_progress",
+            {"status": "completed", "task_id": str(task_id), "reason": "initial_evidence_acquisition"},
+            created_at=_timestamp(run.analysis_time),
+        )
+        updated_run = self.repository.update_run(
+            run.workflow_run_id,
+            search_task_ids=(*run.search_task_ids, str(task_id)),
+        )
+        return updated_run, self._select_evidence(updated_run)
+
     def _structure_selected_evidence(self, run: WorkflowRunRecord, evidence_ids: list[str]) -> None:
         for evidence_id in evidence_ids:
             self.repository.append_event(
@@ -495,6 +584,12 @@ def _to_plain(value: Any) -> Any:
     return value
 
 
+def _value(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
 def _judge_tool_call_payload(tool_call: Any) -> dict[str, Any]:
     return {
         "tool_call_id": tool_call.tool_call_id,
@@ -504,6 +599,34 @@ def _judge_tool_call_payload(tool_call: Any) -> dict[str, Any]:
         "output_summary": tool_call.output_summary,
         "referenced_evidence_ids": list(tool_call.referenced_evidence_ids),
     }
+
+
+def _runtime_error_message(exc: Exception, *, stage: str) -> str:
+    text = str(exc)
+    if _is_missing_llm_credentials(text):
+        provider = os.environ.get("CONSENSUSINVEST_LLM_PROVIDER", "").strip() or "litellm"
+        return (
+            f"{stage} 调用模型失败：当前后端使用 {provider}，但没有可用的模型 API key。"
+            "请在后端环境变量中配置对应模型密钥后重新运行 workflow。"
+        )
+    if "llm_invalid_json" in text:
+        return f"{stage} 调用模型失败：模型返回内容不是有效 JSON，请检查模型配置或提示词约束。"
+    if "llm_empty_response" in text:
+        return f"{stage} 调用模型失败：模型没有返回内容，请稍后重试或检查模型服务。"
+    return f"{stage} 执行失败：{text or exc.__class__.__name__}"
+
+
+def _is_missing_llm_credentials(text: str) -> bool:
+    normalized = text.lower()
+    return (
+        "missing credentials" in normalized
+        or "api_key" in normalized
+        and (
+            "openai_api_key" in normalized
+            or "api key" in normalized
+            or "api_key" in normalized
+        )
+    )
 
 
 __all__ = ["WorkflowOrchestrator"]

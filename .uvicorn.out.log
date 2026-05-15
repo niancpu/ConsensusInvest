@@ -1,0 +1,110 @@
+INFO:     127.0.0.1:65398 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65400 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53227 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53228 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:54735 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:61146 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61147 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61148 - "GET /api/v1/workflow-runs?limit=20&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50463 - "GET /api/v1/stocks/002594.SZ/event-impact-ranking?limit=10 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50461 - "GET /api/v1/stocks/002594.SZ/analysis?refresh=never&latest=true HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50462 - "GET /api/v1/stocks/002594.SZ/industry-details HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50459 - "GET /api/v1/market/concept-radar?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50460 - "GET /api/v1/market/warnings?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50458 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62441 - "GET /api/v1/stocks/002594.SZ/benefits-risks HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:52618 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64959 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64961 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60856 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52235 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52236 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59362 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64960 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54985 - "GET /api/v1/stocks/002594.SZ/event-impact-ranking?limit=10 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54984 - "GET /api/v1/stocks/002594.SZ/industry-details HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54983 - "GET /api/v1/stocks/002594.SZ/analysis?refresh=never&latest=true HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54980 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54982 - "GET /api/v1/market/warnings?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54981 - "GET /api/v1/market/concept-radar?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56384 - "GET /api/v1/stocks/002594.SZ/benefits-risks HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:52234 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57630 - "GET /api/v1/workflow-runs?limit=20&offset=0 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52326 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65508 - "GET /api/v1/stocks/002594.SZ/analysis?refresh=never&latest=true HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65509 - "GET /api/v1/stocks/002594.SZ/industry-details HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65510 - "GET /api/v1/stocks/002594.SZ/event-impact-ranking?limit=10 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:65506 - "GET /api/v1/market/concept-radar?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65505 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65507 - "GET /api/v1/market/warnings?limit=8&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49977 - "GET /api/v1/stocks/002594.SZ/benefits-risks HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:57394 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54393 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54394 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54395 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54396 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54397 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54398 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54114 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51880 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51881 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51882 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51802 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64194 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64193 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64192 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63868 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:58930 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:57778 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:63996 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:59305 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:59884 - "GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59883 - "GET /api/v1/market/index-overview?refresh=stale HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59885 - "GET /api/v1/market/stocks?page=1&page_size=5&refresh=stale HTTP/1.1" 200 OK
+ INFO:     127.0.0.1:65242 - "GET /health HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:49810 - "POST /api/v1/workflow-runs HTTP/1.1" 500 Internal Server Error
+ INFO:     127.0.0.1:62564 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62422 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57099 - "GET /health HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:59292 - "POST /api/v1/workflow-runs HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:59748 - "GET /api/v1/workflow-runs/wr_20260513_002594_000001/snapshot?include_events=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62212 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62213 - "GET /api/v1/workflow-configs HTTP/1.1" 200 OK
+
+[1;31mGive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new[0m
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+INFO:     127.0.0.1:57261 - "POST /api/v1/workflow-runs HTTP/1.1" 202 Accepted
+INFO:     127.0.0.1:58649 - "GET /api/v1/workflow-runs/wr_20260515_002594_000002/snapshot?include_events=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63596 - "GET /api/v1/workflow-runs/wr_20260515_002594_000002/events?follow=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49679 - "GET /api/v1/workflow-runs/wr_20260515_002594_000002/trace HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61717 - "GET /api/v1/raw-items/raw_000003 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65044 - "GET /api/v1/raw-items/raw_000001 HTTP/1.1" 200 OK

@@ -9,11 +9,26 @@ import importlib.util
 import json
 import math
 import os
+import shutil
+import socket
+import subprocess
+from threading import Lock
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import requests
+
 from .models import SearchResultItem, SearchTask
+
+
+_IPV4_DNS_LOCK = Lock()
+_EASTMONEY_INDEX_INTRADAY_ENDPOINTS = (
+    "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
+    "https://80.push2.eastmoney.com/api/qt/stock/trends2/get",
+)
+_SINA_INDEX_MINLINE_ENDPOINT = "https://quotes.sina.cn/cn/api/openapi.php/CN_MinlineService.getMinlineData"
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,7 +298,7 @@ class AkShareSearchProvider:
 
     def search(self, envelope: Any, task: SearchTask) -> ProviderSearchResponse:
         akshare = self._require_module()
-        ticker = _a_share_ticker(task)
+        ticker = _akshare_symbol(task)
         if not ticker:
             raise RuntimeError("akshare ticker is required: set SearchTask.target.ticker or stock_code")
         fetched_at = _now_iso()
@@ -304,9 +319,11 @@ class AkShareSearchProvider:
                 )
             )
         max_results = _bounded_max_results(task, default=self.max_results, provider_limit=200)
+        mapper = _akshare_market_snapshot_item if task.task_type == "market_snapshot" else _akshare_item
         items = tuple(
-            _akshare_item(
+            mapper(
                 record,
+                envelope=envelope,
                 task=task,
                 fetched_at=fetched_at,
                 source=self.source,
@@ -608,6 +625,7 @@ def _akshare_request_specs(
     evidence_types = set(task.scope.evidence_types)
     start_date, end_date = _date_bounds_yyyymmdd(envelope, task)
     specs: list[tuple[str, Any]] = []
+    market_view = _market_view(task)
     if not evidence_types or evidence_types & {"company_news", "industry_news"}:
         specs.append(("stock_news_em", _call_provider_method(akshare, "stock_news_em", symbol=ticker)))
     if evidence_types & {"financial_report"}:
@@ -617,7 +635,14 @@ def _akshare_request_specs(
                 _call_provider_method(akshare, "stock_financial_abstract", symbol=ticker),
             )
         )
-    if evidence_types & {"market_snapshot"}:
+    if evidence_types & {"market_snapshot", "index_quote"} and (
+        market_view in {"index_overview", "index_intraday"} or task.target.entity_type == "market"
+    ):
+        if market_view == "index_intraday":
+            specs.append(_akshare_index_intraday_spec(akshare, task, ticker))
+        elif callable(getattr(akshare, "stock_zh_index_spot_em", None)):
+            specs.append(("stock_zh_index_spot_em", _call_provider_method(akshare, "stock_zh_index_spot_em")))
+    elif evidence_types & {"market_snapshot"}:
         specs.append(
             (
                 "stock_zh_a_hist",
@@ -633,6 +658,34 @@ def _akshare_request_specs(
             )
         )
     return [(name, frame) for name, frame in specs if frame is not _MISSING_PROVIDER_METHOD]
+
+
+def _akshare_index_intraday_spec(akshare: Any, task: SearchTask, ticker: str) -> tuple[str, Any]:
+    akshare_error: RuntimeError | None = None
+    if callable(getattr(akshare, "index_zh_a_hist_min_em", None)):
+        try:
+            return (
+                "index_zh_a_hist_min_em",
+                _call_provider_method(akshare, "index_zh_a_hist_min_em", symbol=ticker, period="1"),
+            )
+        except RuntimeError as exc:
+            akshare_error = exc
+    try:
+        return ("eastmoney_index_trends2", _eastmoney_index_intraday_records(task, ticker))
+    except RuntimeError as eastmoney_error:
+        try:
+            return ("sina_index_minline", _sina_index_intraday_records(task, ticker))
+        except RuntimeError as sina_error:
+            pass
+        if akshare_error is not None:
+            raise RuntimeError(
+                "index intraday provider calls failed: "
+                f"akshare={akshare_error}; eastmoney={eastmoney_error}; sina={sina_error}"
+            ) from sina_error
+        raise RuntimeError(
+            "index intraday provider calls failed: "
+            f"eastmoney={eastmoney_error}; sina={sina_error}"
+        ) from sina_error
 
 
 def _tushare_request_specs(
@@ -676,6 +729,7 @@ def _tushare_request_specs(
 def _akshare_item(
     record: dict[str, Any],
     *,
+    envelope: Any,
     task: SearchTask,
     fetched_at: str,
     source: str,
@@ -717,6 +771,88 @@ def _akshare_item(
         "metadata": {
             "evidence_type": _first_or_none(task.scope.evidence_types),
             "provider_api": api_name,
+        },
+    }
+
+
+def _akshare_market_snapshot_item(
+    record: dict[str, Any],
+    *,
+    envelope: Any,
+    task: SearchTask,
+    fetched_at: str,
+    source: str,
+    source_type: str,
+) -> dict[str, Any]:
+    safe_record = _json_safe(record)
+    api_name = _clean(record.get("_provider_api")) or "akshare"
+    symbol = _clean(record.get("_provider_symbol")) or _akshare_symbol(task) or "000001"
+    market_view = _market_view(task)
+    is_index = "index" in api_name or market_view in {"index_overview", "index_intraday"}
+    if is_index:
+        code = _index_code_from_record(record, task, symbol)
+        name = _first_clean(record, ("名称", "指数名称", "name", "简称")) or _index_name(code)
+        value = _first_number(record, ("最新价", "最新", "收盘", "收盘价", "close", "price", "value"))
+        change_rate = _first_number(record, ("涨跌幅", "涨跌幅%", "change_rate", "pct_chg"))
+        metrics = {
+            "code": code,
+            "name": name,
+            "value": value or 0.0,
+            "change": _first_number(record, ("涨跌额", "涨跌", "change")),
+            "change_rate": change_rate or 0.0,
+            "is_up": (change_rate or 0.0) >= 0,
+            "open": _first_number(record, ("今开", "开盘", "open")),
+            "high": _first_number(record, ("最高", "high")),
+            "low": _first_number(record, ("最低", "low")),
+            "previous_close": _first_number(record, ("昨收", "previous_close", "昨收价")),
+            "volume": _first_number(record, ("成交量", "volume", "vol")),
+            "amount": _first_number(record, ("成交额", "amount")),
+        }
+        return {
+            "external_id": _external_id(source, f"{api_name}:{code}:{safe_record}"),
+            "source": source,
+            "source_type": source_type,
+            "snapshot_type": "index_quote",
+            "ticker": code.split(".", 1)[0],
+            "snapshot_time": _akshare_snapshot_time(record, envelope),
+            "fetched_at": fetched_at,
+            "metrics": {key: value for key, value in metrics.items() if value is not None},
+            "raw_payload": {
+                "provider_response": safe_record,
+                "provider_api": api_name,
+                "provider_symbol": symbol,
+            },
+        }
+
+    close_value = _first_number(record, ("收盘", "收盘价", "close", "最新价", "price"))
+    change_rate = _first_number(record, ("涨跌幅", "change_rate", "pct_chg"))
+    metrics = {
+        "stock_code": _stock_code_from_task(task, symbol),
+        "ticker": symbol,
+        "name": _first_clean(record, ("名称", "股票简称", "简称", "name")) or symbol,
+        "price": close_value or 0.0,
+        "change_rate": change_rate or 0.0,
+        "is_up": (change_rate or 0.0) >= 0,
+        "open": _first_number(record, ("开盘", "open")),
+        "high": _first_number(record, ("最高", "high")),
+        "low": _first_number(record, ("最低", "low")),
+        "volume": _first_number(record, ("成交量", "volume", "vol")),
+        "amount": _first_number(record, ("成交额", "amount")),
+    }
+    return {
+        "external_id": _external_id(source, f"{api_name}:{symbol}:{safe_record}"),
+        "source": source,
+        "source_type": source_type,
+        "snapshot_type": "stock_quote",
+        "ticker": symbol,
+        "entity_ids": (task.target.entity_id,) if task.target.entity_id else (),
+        "snapshot_time": _akshare_snapshot_time(record, envelope),
+        "fetched_at": fetched_at,
+        "metrics": {key: value for key, value in metrics.items() if value is not None},
+        "raw_payload": {
+            "provider_response": safe_record,
+            "provider_api": api_name,
+            "provider_symbol": symbol,
         },
     }
 
@@ -814,6 +950,312 @@ def _records_from_frame(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _eastmoney_index_intraday_records(task: SearchTask, ticker: str) -> list[dict[str, Any]]:
+    params = {
+        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+        "iscr": "0",
+        "iscca": "0",
+        "ndays": "1",
+    }
+    errors: list[str] = []
+    for endpoint in _EASTMONEY_INDEX_INTRADAY_ENDPOINTS:
+        for secid in _eastmoney_index_secids(task, ticker):
+            payload = dict(params, secid=secid)
+            try:
+                response = _eastmoney_get_json(endpoint, payload)
+            except RuntimeError as exc:
+                errors.append(f"{endpoint} {secid}:{exc}")
+                continue
+            data = response.get("data")
+            if not isinstance(data, dict):
+                errors.append(f"{endpoint} {secid}:empty_data")
+                continue
+            trends = data.get("trends")
+            if not isinstance(trends, list) or not trends:
+                errors.append(f"{endpoint} {secid}:empty_trends")
+                continue
+            records = [
+                record
+                for item in trends
+                if isinstance(item, str) and (record := _eastmoney_index_trend_record(item, data)) is not None
+            ]
+            if records:
+                return records
+            errors.append(f"{endpoint} {secid}:invalid_trends")
+    detail = "; ".join(errors) if errors else "no secid candidates"
+    raise RuntimeError(f"eastmoney index intraday request failed: {detail}")
+
+
+def _eastmoney_get_json(url: str, params: dict[str, str]) -> dict[str, Any]:
+    headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://quote.eastmoney.com/",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+        ),
+    }
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        with _IPV4_DNS_LOCK:
+            response = _requests_get_ipv4(session, url, params=params, headers=headers, timeout=20.0)
+        response.raise_for_status()
+        raw = response.text
+    except requests.Timeout as exc:
+        raw = _eastmoney_get_json_with_curl(url, params, headers, f"timeout:{exc}")
+    except requests.RequestException as exc:
+        raw = _eastmoney_get_json_with_curl(url, params, headers, f"network_error:{exc}")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("invalid_json") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("invalid_response")
+    return parsed
+
+
+def _eastmoney_get_json_with_curl(
+    url: str,
+    params: dict[str, str],
+    headers: dict[str, str],
+    request_error: str,
+) -> str:
+    curl = shutil.which("curl.exe") or shutil.which("curl")
+    if curl is None:
+        raise RuntimeError(f"{request_error}; curl_unavailable")
+    command = [
+        curl,
+        "-4",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "20",
+    ]
+    for key, value in headers.items():
+        command.extend(["-H", f"{key}: {value}"])
+    command.append(f"{url}?{urlencode(params)}")
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=25,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"{request_error}; curl_failed:{exc}") from exc
+    if completed.stdout:
+        return completed.stdout
+    if completed.returncode != 0:
+        detail = _trim(completed.stderr.strip(), 300)
+        raise RuntimeError(f"{request_error}; curl_exit_{completed.returncode}:{detail}")
+    else:
+        raise RuntimeError(f"{request_error}; curl_empty_response")
+
+
+def _requests_get_ipv4(
+    session: requests.Session,
+    url: str,
+    *,
+    params: dict[str, str],
+    headers: dict[str, str],
+    timeout: float,
+) -> requests.Response:
+    original_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo_ipv4(*args: Any, **kwargs: Any) -> list[Any]:
+        results = original_getaddrinfo(*args, **kwargs)
+        ipv4_results = [item for item in results if item[0] == socket.AF_INET]
+        return ipv4_results or results
+
+    socket.getaddrinfo = getaddrinfo_ipv4
+    try:
+        return session.get(url, params=params, headers=headers, timeout=timeout)
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
+
+
+def _eastmoney_index_secids(task: SearchTask, ticker: str) -> tuple[str, ...]:
+    raw_code = _clean(task.target.metadata.get("code")) or ticker
+    code = raw_code.upper().strip()
+    if "." in code:
+        raw, suffix = code.split(".", 1)
+        if suffix == "SH":
+            return (f"1.{raw}",)
+        if suffix == "SZ":
+            return (f"0.{raw}",)
+    if code.startswith("SH"):
+        return (f"1.{code.removeprefix('SH')}",)
+    if code.startswith("SZ"):
+        return (f"0.{code.removeprefix('SZ')}",)
+    if ticker in {"399001", "399006"}:
+        return (f"0.{ticker}", f"1.{ticker}")
+    if ticker == "000001":
+        return ("1.000001", "0.000001")
+    return (f"1.{ticker}", f"0.{ticker}", f"2.{ticker}", f"47.{ticker}")
+
+
+def _eastmoney_index_trend_record(raw: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    parts = raw.split(",")
+    if len(parts) < 8:
+        return None
+    date_part, _, time_part = parts[0].partition(" ")
+    close_value = _number(parts[2])
+    previous_close = _number(data.get("preClose"))
+    change = close_value - previous_close if close_value is not None and previous_close else None
+    change_rate = change / previous_close * 100 if change is not None and previous_close else None
+    return {
+        "日期": date_part,
+        "时间": time_part or parts[0],
+        "代码": data.get("code"),
+        "名称": data.get("name"),
+        "开盘": parts[1],
+        "收盘": parts[2],
+        "最高": parts[3],
+        "最低": parts[4],
+        "成交量": parts[5],
+        "成交额": parts[6],
+        "均价": parts[7],
+        "涨跌额": change,
+        "涨跌幅": change_rate,
+        "昨收": previous_close,
+    }
+
+
+def _sina_index_intraday_records(task: SearchTask, ticker: str) -> list[dict[str, Any]]:
+    symbol = _sina_index_symbol(task, ticker)
+    response = _sina_get_json(_SINA_INDEX_MINLINE_ENDPOINT, {"symbol": symbol})
+    result = response.get("result")
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list) or not data:
+        raise RuntimeError("sina index intraday returned empty data")
+    trade_date = _sina_trade_date(task, symbol)
+    records = [
+        record
+        for item in data
+        if isinstance(item, dict)
+        and (record := _sina_index_minline_record(item, task=task, ticker=ticker, trade_date=trade_date)) is not None
+    ]
+    if not records:
+        raise RuntimeError("sina index intraday returned no usable records")
+    return records
+
+
+def _sina_get_json(url: str, params: dict[str, str]) -> dict[str, Any]:
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        response = session.get(
+            url,
+            params=params,
+            headers={
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://finance.sina.com.cn/",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
+                ),
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError(f"sina_timeout:{exc}") from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"sina_network_error:{exc}") from exc
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        raise RuntimeError("sina_invalid_json") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("sina_invalid_response")
+    return parsed
+
+
+def _sina_index_symbol(task: SearchTask, ticker: str) -> str:
+    raw_code = _clean(task.target.metadata.get("code")) or ticker
+    code = raw_code.upper().strip()
+    if "." in code:
+        raw, suffix = code.split(".", 1)
+        return f"{suffix.lower()}{raw}"
+    if code.startswith(("SH", "SZ")):
+        return code.lower()
+    prefix = "sh" if ticker.startswith(("0", "5", "6", "9")) else "sz"
+    return f"{prefix}{ticker}"
+
+
+def _sina_trade_date(task: SearchTask, symbol: str) -> str:
+    raw_date = _clean(task.scope.metadata.get("trade_date") or task.target.metadata.get("trade_date"))
+    if raw_date:
+        return _compact_date(raw_date) or raw_date
+    try:
+        quote = _sina_get_quote(symbol)
+    except RuntimeError:
+        return datetime.now().date().isoformat()
+    return quote.get("date") or datetime.now().date().isoformat()
+
+
+def _sina_get_quote(symbol: str) -> dict[str, str]:
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        response = session.get(
+            "https://hq.sinajs.cn/list=" + symbol,
+            headers={
+                "Referer": "https://finance.sina.com.cn/",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=10.0,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"sina_quote_network_error:{exc}") from exc
+    text = response.text
+    _, _, payload = text.partition('="')
+    payload = payload.rsplit('";', 1)[0]
+    parts = payload.split(",")
+    if len(parts) < 31:
+        raise RuntimeError("sina_quote_invalid_response")
+    date_value = _compact_date(parts[30])
+    if date_value is None:
+        raise RuntimeError("sina_quote_missing_date")
+    return {"date": date_value}
+
+
+def _sina_index_minline_record(
+    item: dict[str, Any],
+    *,
+    task: SearchTask,
+    ticker: str,
+    trade_date: str,
+) -> dict[str, Any] | None:
+    time_value = _clean(item.get("m"))
+    price = _number(item.get("p"))
+    if time_value is None or price is None:
+        return None
+    raw_code = _clean(task.target.metadata.get("code")) or ticker
+    code = _index_code_from_record({"code": raw_code}, task, ticker)
+    return {
+        "日期": trade_date,
+        "时间": time_value,
+        "代码": code,
+        "名称": _index_name(code),
+        "收盘": price,
+        "开盘": price,
+        "最高": price,
+        "最低": price,
+        "成交量": _number(item.get("v")),
+        "成交额": _number(item.get("tot_v")),
+        "均价": _number(item.get("avg_p")),
+        "涨跌幅": _number(item.get("hlz")),
+    }
+
+
 def _tag_records(
     records: list[dict[str, Any]],
     *,
@@ -888,6 +1330,21 @@ def _date_bounds_yyyymmdd(envelope: Any, task: SearchTask) -> tuple[str | None, 
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
 
 
+def _akshare_symbol(task: SearchTask) -> str | None:
+    ticker = _a_share_ticker(task)
+    if ticker:
+        return ticker
+    metadata_code = _clean(task.target.metadata.get("code"))
+    if metadata_code:
+        return metadata_code.split(".", 1)[0].removeprefix("SH").removeprefix("SZ")
+    metadata_ticker = _clean(task.target.metadata.get("ticker"))
+    if metadata_ticker:
+        return metadata_ticker.split(".", 1)[0]
+    if task.target.entity_type == "market":
+        return "000001"
+    return None
+
+
 def _a_share_ticker(task: SearchTask) -> str | None:
     if task.target.ticker:
         return task.target.ticker.strip()
@@ -906,6 +1363,80 @@ def _tushare_ts_code(task: SearchTask) -> str | None:
         return None
     suffix = "SH" if ticker.startswith(("5", "6", "9")) else "SZ"
     return f"{ticker}.{suffix}"
+
+
+def _market_view(task: SearchTask) -> str | None:
+    value = task.target.metadata.get("market_view") or task.scope.metadata.get("market_view") or task.metadata.get("market_view")
+    return _clean(value)
+
+
+def _index_code_from_record(record: dict[str, Any], task: SearchTask, symbol: str) -> str:
+    raw = _first_clean(record, ("代码", "指数代码", "code", "symbol")) or task.target.metadata.get("code") or symbol
+    text = str(raw).strip().upper()
+    if text in {"000001", "SH000001"}:
+        return "000001.SH"
+    if text in {"399001", "SZ399001"}:
+        return "399001.SZ"
+    if text in {"399006", "SZ399006"}:
+        return "399006.SZ"
+    if "." in text:
+        return text
+    suffix = "SH" if text.startswith(("0", "5", "6", "9")) else "SZ"
+    return f"{text}.{suffix}"
+
+
+def _index_name(code: str) -> str:
+    return {
+        "000001.SH": "上证指数",
+        "399001.SZ": "深证成指",
+        "399006.SZ": "创业板指",
+    }.get(code, code)
+
+
+def _stock_code_from_task(task: SearchTask, symbol: str) -> str:
+    if task.target.stock_code:
+        return task.target.stock_code.strip().upper()
+    suffix = "SH" if symbol.startswith(("5", "6", "9")) else "SZ"
+    return f"{symbol}.{suffix}"
+
+
+def _first_number(record: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _number(record.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _number(value: Any) -> float | None:
+    text = _clean(value)
+    if text is None:
+        return None
+    text = text.replace(",", "").replace("%", "")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _akshare_snapshot_time(record: dict[str, Any], envelope: Any) -> str:
+    date_value = _first_clean(record, ("日期", "date", "trade_date"))
+    time_value = _first_clean(record, ("时间", "time", "datetime"))
+    if date_value and len(date_value) == 8 and date_value.isdigit():
+        date_value = _compact_date(date_value)
+    if date_value and time_value and "T" not in time_value:
+        return _provider_datetime(f"{date_value} {time_value}") or _now_iso()
+    if date_value:
+        return _provider_datetime(date_value) or _now_iso()
+    if time_value:
+        analysis_time = getattr(envelope, "analysis_time", None)
+        if isinstance(analysis_time, datetime):
+            return _provider_datetime(f"{analysis_time.date().isoformat()} {time_value}") or _now_iso()
+        return _provider_datetime(time_value) or _now_iso()
+    analysis_time = getattr(envelope, "analysis_time", None)
+    if isinstance(analysis_time, datetime):
+        return analysis_time.isoformat()
+    return _now_iso()
 
 
 def _first_clean(record: dict[str, Any], keys: tuple[str, ...]) -> str | None:

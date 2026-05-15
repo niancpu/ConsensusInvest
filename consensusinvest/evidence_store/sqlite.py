@@ -80,6 +80,7 @@ class SQLiteEvidenceStoreClient:
         envelope.validate_for_create()
         accepted_raw_refs: list[str] = []
         created_evidence_ids: list[str] = []
+        updated_evidence_ids: list[str] = []
         rejected_items: list[IngestRejectedItem] = []
 
         normalized = self.normalizer.normalize_search_result(envelope, package)
@@ -88,6 +89,9 @@ class SQLiteEvidenceStoreClient:
         for draft in normalized.drafts:
             duplicate_key = self._existing_dedupe_key(list(draft.dedupe_keys))
             if duplicate_key is not None:
+                existing_evidence_id = self._evidence_id_for_dedupe_key(duplicate_key)
+                if self._link_workflow_evidence(envelope.workflow_run_id, existing_evidence_id):
+                    updated_evidence_ids.append(existing_evidence_id)
                 rejected_items.append(
                     IngestRejectedItem(
                         external_id=draft.external_id,
@@ -110,6 +114,10 @@ class SQLiteEvidenceStoreClient:
                     self._insert_raw(raw_item)
                     self._insert_evidence(evidence_item)
                     self._replace_evidence_entities(evidence_item)
+                    self._insert_workflow_evidence_link(
+                        envelope.workflow_run_id,
+                        evidence_item.evidence_id,
+                    )
                     for item_key in draft.dedupe_keys:
                         self._insert_dedupe_key(
                             item_key,
@@ -132,9 +140,9 @@ class SQLiteEvidenceStoreClient:
             accepted_raw_refs.append(raw_item.raw_ref)
             created_evidence_ids.append(evidence_item.evidence_id)
 
-        if accepted_raw_refs and rejected_items:
+        if (accepted_raw_refs or updated_evidence_ids) and rejected_items:
             status = "partial_accepted"
-        elif accepted_raw_refs:
+        elif accepted_raw_refs or updated_evidence_ids:
             status = "accepted"
         else:
             status = "rejected"
@@ -145,7 +153,7 @@ class SQLiteEvidenceStoreClient:
             status=status,
             accepted_raw_refs=accepted_raw_refs,
             created_evidence_ids=created_evidence_ids,
-            updated_evidence_ids=[],
+            updated_evidence_ids=updated_evidence_ids,
             rejected_items=rejected_items,
         )
 
@@ -159,6 +167,7 @@ class SQLiteEvidenceStoreClient:
         publish_lte = _parse_datetime(evidence_query.publish_time_lte)
         publish_gte = _parse_datetime(evidence_query.publish_time_gte)
         raw_items = self._load_raw_items_by_ref()
+        workflow_links = self._load_workflow_evidence_links(evidence_query.workflow_run_id)
         allowed_evidence_ids = self._matching_evidence_ids_for_entities(
             evidence_query.entity_ids
         )
@@ -174,7 +183,12 @@ class SQLiteEvidenceStoreClient:
             and _source_quality_at_least(item.source_quality, evidence_query.source_quality_min)
             and _datetime_lte(item.publish_time, publish_lte)
             and _datetime_gte(item.publish_time, publish_gte)
-            and _matches_workflow_run_id(item, evidence_query.workflow_run_id, raw_items)
+            and _matches_workflow_run_id(
+                item,
+                evidence_query.workflow_run_id,
+                raw_items,
+                workflow_links,
+            )
         ]
         rows.sort(key=_evidence_sort_key, reverse=True)
         total = len(rows)
@@ -537,6 +551,17 @@ class SQLiteEvidenceStoreClient:
                     FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS workflow_evidence_links (
+                    workflow_run_id TEXT NOT NULL,
+                    evidence_id TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(workflow_run_id, evidence_id),
+                    FOREIGN KEY(evidence_id) REFERENCES evidence_items(evidence_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workflow_evidence_links_workflow
+                    ON workflow_evidence_links(workflow_run_id);
+
                 CREATE TABLE IF NOT EXISTS market_snapshots (
                     market_snapshot_id TEXT PRIMARY KEY,
                     snapshot_type TEXT NOT NULL,
@@ -685,6 +710,32 @@ class SQLiteEvidenceStoreClient:
             (item_key, raw_ref, evidence_id),
         )
 
+    def _insert_workflow_evidence_link(
+        self,
+        workflow_run_id: str | None,
+        evidence_id: str | None,
+    ) -> bool:
+        workflow_id = _clean_key_value(workflow_run_id)
+        evidence_key = _clean_key_value(evidence_id)
+        if workflow_id is None or evidence_key is None:
+            return False
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO workflow_evidence_links (workflow_run_id, evidence_id)
+            VALUES (?, ?)
+            """,
+            (workflow_id, evidence_key),
+        )
+        return cursor.rowcount > 0
+
+    def _link_workflow_evidence(
+        self,
+        workflow_run_id: str | None,
+        evidence_id: str | None,
+    ) -> bool:
+        with self._conn:
+            return self._insert_workflow_evidence_link(workflow_run_id, evidence_id)
+
     def _existing_dedupe_key(self, item_keys: list[str]) -> str | None:
         for key in item_keys:
             row = self._conn.execute(
@@ -694,6 +745,15 @@ class SQLiteEvidenceStoreClient:
             if row is not None:
                 return str(row["item_key"])
         return None
+
+    def _evidence_id_for_dedupe_key(self, item_key: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT evidence_id FROM dedupe_keys WHERE item_key = ?",
+            (item_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["evidence_id"])
 
     def _next_id(self, prefix: str) -> str:
         key = f"next_{prefix}_id"
@@ -762,6 +822,23 @@ class SQLiteEvidenceStoreClient:
                 for row in self._conn.execute("SELECT * FROM raw_items").fetchall()
             )
         }
+
+    def _load_workflow_evidence_links(
+        self,
+        workflow_run_id: str | None,
+    ) -> dict[str, set[str]] | None:
+        workflow_id = _clean_key_value(workflow_run_id)
+        if workflow_id is None:
+            return None
+        rows = self._conn.execute(
+            """
+            SELECT evidence_id
+            FROM workflow_evidence_links
+            WHERE workflow_run_id = ?
+            """,
+            (workflow_id,),
+        ).fetchall()
+        return {workflow_id: {str(row["evidence_id"]) for row in rows}}
 
     def _load_latest_structure(self, evidence_id: str) -> EvidenceStructure | None:
         row = self._conn.execute(

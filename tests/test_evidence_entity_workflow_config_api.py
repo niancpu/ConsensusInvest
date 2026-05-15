@@ -123,3 +123,89 @@ def test_workflow_evidence_api_reads_same_runtime_store(client: TestClient) -> N
     references = client.get(f"/api/v1/workflow-runs/{workflow_run_id}/evidence-references")
     assert references.status_code == 200, references.text
     assert references.json()["data"][0]["evidence_id"] == evidence_id
+
+
+def test_workflow_evidence_api_projects_reused_evidence_to_current_workflow(client: TestClient) -> None:
+    first = client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "ticker": "002594",
+            "analysis_time": "2026-05-13T10:00:00+00:00",
+            "workflow_config_id": "mvp_bull_judge_v1",
+            "query": {"sources": ["tavily"], "evidence_types": ["company_news"]},
+            "options": {"auto_run": False},
+        },
+    )
+    second = client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "ticker": "002594",
+            "analysis_time": "2026-05-13T10:00:00+00:00",
+            "workflow_config_id": "mvp_bull_judge_v1",
+            "query": {"sources": ["tavily"], "evidence_types": ["company_news"]},
+            "options": {"auto_run": False},
+        },
+    )
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    first_workflow_id = first.json()["data"]["workflow_run_id"]
+    second_workflow_id = second.json()["data"]["workflow_run_id"]
+
+    evidence_store = client.app.state.runtime.evidence_store
+    first_envelope = InternalCallEnvelope(
+        request_id="req_test_reuse_first",
+        correlation_id="corr_test_reuse_first",
+        workflow_run_id=first_workflow_id,
+        analysis_time=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+        requested_by="test",
+        idempotency_key=f"seed_{first_workflow_id}",
+    )
+    second_envelope = InternalCallEnvelope(
+        request_id="req_test_reuse_second",
+        correlation_id="corr_test_reuse_second",
+        workflow_run_id=second_workflow_id,
+        analysis_time=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+        requested_by="test",
+        idempotency_key=f"seed_{second_workflow_id}",
+    )
+    package = SearchResultPackage(
+        task_id="st_test_reuse",
+        worker_id="worker_tavily",
+        source="tavily",
+        source_type="web_news",
+        target=SearchTarget(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            keywords=("BYD",),
+        ),
+        items=(
+            {
+                "external_id": "shared_news_001",
+                "title": "Shared workflow BYD evidence",
+                "url": "https://example.com/shared/001",
+                "content": "Shared factual evidence.",
+                "publish_time": "2026-05-12T10:00:00+00:00",
+                "source_quality_hint": 0.86,
+                "relevance": 0.9,
+            },
+        ),
+        completed_at="2026-05-13T09:30:00+00:00",
+        metadata={"evidence_type": "company_news"},
+    )
+
+    first_result = evidence_store.ingest_search_result(first_envelope, package)
+    second_result = evidence_store.ingest_search_result(second_envelope, package)
+
+    assert first_result.created_evidence_ids == ["ev_000001"]
+    assert second_result.updated_evidence_ids == ["ev_000001"]
+
+    evidence = client.get(f"/api/v1/workflow-runs/{second_workflow_id}/evidence")
+    assert evidence.status_code == 200, evidence.text
+    assert evidence.json()["data"][0]["evidence_id"] == "ev_000001"
+    assert evidence.json()["data"][0]["workflow_run_id"] == second_workflow_id
+
+    raw_items = client.get(f"/api/v1/workflow-runs/{second_workflow_id}/raw-items")
+    assert raw_items.status_code == 200, raw_items.text
+    assert raw_items.json()["data"][0]["raw_ref"] == "raw_000001"
+    assert raw_items.json()["data"][0]["workflow_run_id"] == second_workflow_id

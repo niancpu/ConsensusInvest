@@ -3,13 +3,26 @@ from datetime import datetime, timezone
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
 from consensusinvest.evidence_store import FakeEvidenceStoreClient
 from consensusinvest.runtime import InternalCallEnvelope
+from consensusinvest.search_agent import SearchAgentPool
 from consensusinvest.search_agent.models import SearchResultPackage, SearchTarget
+from consensusinvest.search_agent.providers import MockSearchProvider
 from consensusinvest.workflow_orchestrator import InMemoryWorkflowRepository, WorkflowOrchestrator
+from consensusinvest.workflow_orchestrator.acquisition import EvidenceAcquisitionService
 from consensusinvest.workflow_orchestrator.models import (
     WorkflowOptions,
     WorkflowQuery,
     WorkflowRunCreate,
 )
+
+
+class RaisingSwarm:
+    repository = AgentSwarmRuntime(evidence_store=FakeEvidenceStoreClient()).repository
+
+    def run(self, *args, **kwargs):
+        raise RuntimeError(
+            "OpenAIException - Missing credentials. Please pass an `api_key` "
+            "or set the `OPENAI_API_KEY` environment variable."
+        )
 
 
 def _analysis_time() -> datetime:
@@ -134,3 +147,100 @@ def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> Non
     assert run.evidence_gaps
     events = service.list_events(run.workflow_run_id)
     assert [event.event_type for event in events][-1] == "workflow_failed"
+
+
+def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> None:
+    store = FakeEvidenceStoreClient()
+    search_pool = SearchAgentPool(
+        providers={
+            "tavily": MockSearchProvider(
+                items_by_source={
+                    "tavily": (
+                        {
+                            "external_id": "auto_news_001",
+                            "title": "BYD margin improved",
+                            "url": "https://example.com/auto/001",
+                            "content": "BYD reported margin improvement.",
+                            "publish_time": "2026-05-12T10:00:00+00:00",
+                            "source_quality_hint": 0.86,
+                            "metadata": {"evidence_type": "company_news"},
+                        },
+                        {
+                            "external_id": "auto_news_002",
+                            "title": "BYD cash flow needs checking",
+                            "url": "https://example.com/auto/002",
+                            "content": "BYD cash flow quality still needs checking.",
+                            "publish_time": "2026-05-12T11:00:00+00:00",
+                            "source_quality_hint": 0.74,
+                            "metadata": {"evidence_type": "company_news"},
+                        },
+                    )
+                }
+            )
+        },
+        evidence_store=store,
+    )
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+    )
+
+    run = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=True),
+        )
+    )
+
+    assert run.status == "completed"
+    assert run.search_task_ids
+    snapshot = service.snapshot(run.workflow_run_id)
+    assert len(snapshot["evidence_items"]) == 2
+    events = [event.event_type for event in service.list_events(run.workflow_run_id)]
+    assert "connector_started" in events
+    assert "agent_argument_completed" in events
+
+
+def test_workflow_orchestrator_marks_agent_runtime_error_as_workflow_failed() -> None:
+    store = FakeEvidenceStoreClient()
+    repository = InMemoryWorkflowRepository()
+    queued_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        repository=repository,
+        evidence_store=store,
+        agent_swarm=queued_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=queued_swarm.repository),
+    )
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    _seed_store(queued.workflow_run_id, store)
+    service.agent_swarm = RaisingSwarm()
+
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "failed"
+    assert run.stage == "failed"
+    assert run.failure_code == "agent_swarm_failed"
+    assert "没有可用的模型 API key" in (run.failure_message or "")
+    failed_event = service.list_events(run.workflow_run_id)[-1]
+    assert failed_event.event_type == "workflow_failed"
+    assert failed_event.payload["code"] == "agent_swarm_failed"
+    assert "没有可用的模型 API key" in failed_event.payload["message"]

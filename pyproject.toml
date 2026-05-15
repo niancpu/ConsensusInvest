@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "litellm>=1.84.0",
+    "akshare>=1.18.60",
 ]
 
 [project.optional-dependencies]

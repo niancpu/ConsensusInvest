@@ -22,6 +22,7 @@ from consensusinvest.report_module.service import (
     build_concept_radar,
     build_event_impact_ranking,
     build_industry_details_view,
+    build_index_intraday,
     build_index_overview,
     build_market_stocks,
     build_market_warnings,
@@ -74,6 +75,17 @@ def test_market_index_overview_empty_store_requests_refresh(client: TestClient) 
     assert data["refresh_task_id"]
 
 
+def test_market_index_intraday_empty_store_requests_refresh(client: TestClient) -> None:
+    client.app.state.runtime.search_pool.providers = {}
+    r = client.get("/api/v1/market/index-intraday", params={"code": "000001.SH"})
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["code"] == "000001.SH"
+    assert data["points"] == []
+    assert data["data_state"] == "pending_refresh"
+    assert data["refresh_task_id"]
+
+
 def test_market_index_overview_api_writes_report_run(client: TestClient, tmp_path: Path) -> None:
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     client.app.state.report_repository = repo
@@ -87,6 +99,73 @@ def test_market_index_overview_api_writes_report_run(client: TestClient, tmp_pat
     run = repo.list_runs(limit=1, status="pending_refresh")[0]
     assert run.refresh_task_id == refresh_task_id
     assert run.output_snapshot["refresh_task_id"] == refresh_task_id
+    repo.close()
+
+
+def test_market_index_intraday_projects_snapshot_points(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _reader_with_market_snapshot_draft(
+        repo,
+        MarketSnapshotDraft(
+            snapshot_type="index_quote",
+            ticker="000001",
+            source="akshare",
+            snapshot_time="2026-05-13T09:31:00+00:00",
+            metrics={
+                "code": "000001.SH",
+                "name": "上证指数",
+                "value": 3121.5,
+                "open": 3120.1,
+                "high": 3122.0,
+                "low": 3119.8,
+                "previous_close": 3118.2,
+                "intraday_points": [
+                    {"time": "09:30", "timestamp": "2026-05-13T09:30:00+08:00", "value": 3120.1},
+                    {"time": "09:31", "timestamp": "2026-05-13T09:31:00+08:00", "value": 3121.5},
+                ],
+            },
+        ),
+    )
+
+    view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
+
+    assert refresh_task_id is None
+    assert view.data_state == "ready"
+    assert view.name == "上证指数"
+    assert [point.value for point in view.points] == [3120.1, 3121.5]
+    assert view.open == 3120.1
+    assert view.snapshot_ids
+    repo.close()
+
+
+def test_market_index_intraday_refresh_runs_search_agent_and_reprojects_snapshot(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _empty_reader(repo)
+    reader.search_pool = FakeImmediateMarketSearchPool(reader.evidence_store)
+
+    view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
+
+    assert refresh_task_id == "st_intraday_refresh_001"
+    assert reader.search_pool.ran_task_ids == ["st_intraday_refresh_001"]
+    assert view.data_state == "ready"
+    assert view.points[0].time == "09:30"
+    assert [point.value for point in view.points] == [3120.1, 3121.5]
+    assert view.snapshot_ids
+    _, search_task = reader.search_pool.calls[0]
+    assert search_task.scope.sources == ("akshare",)
+    repo.close()
+
+
+def test_market_index_intraday_existing_failed_refresh_reports_failed(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _empty_reader(repo)
+    reader.search_pool = FakeFailedMarketSearchPool()
+
+    view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
+
+    assert refresh_task_id == "st_failed_intraday"
+    assert view.data_state == "failed"
+    assert view.points == []
     repo.close()
 
 
@@ -850,3 +929,81 @@ class FakeSearchPool:
             "idempotency_key": envelope.idempotency_key or "missing",
             "poll_after_ms": 1000,
         }
+
+
+class FakeImmediateMarketSearchPool:
+    def __init__(self, evidence_store: InMemoryEvidenceStoreClient) -> None:
+        self.evidence_store = evidence_store
+        self.calls: list[tuple[InternalCallEnvelope, object]] = []
+        self.ran_task_ids: list[str] = []
+        self.providers = {"akshare": object(), "tavily": object()}
+        self.repository = FakeSearchRepository()
+
+    def submit(self, envelope: InternalCallEnvelope, task: object) -> dict[str, object]:
+        task_id = "st_intraday_refresh_001"
+        self.calls.append((envelope, task))
+        self.repository.statuses[task_id] = SearchTaskStatus.QUEUED
+        return {
+            "task_id": task_id,
+            "status": SearchTaskStatus.QUEUED,
+            "accepted_at": datetime.now(timezone.utc),
+            "idempotency_key": envelope.idempotency_key or "missing",
+            "poll_after_ms": 1000,
+        }
+
+    def run_task_once(self, task_id: str) -> bool:
+        envelope, _ = self.calls[-1]
+        self.ran_task_ids.append(task_id)
+        self.evidence_store.save_market_snapshot(
+            envelope,
+            MarketSnapshotDraft(
+                snapshot_type="index_quote",
+                ticker="000001",
+                source="akshare",
+                snapshot_time="2026-05-13T09:31:00+00:00",
+                metrics={
+                    "code": "000001.SH",
+                    "name": "上证指数",
+                    "value": 3121.5,
+                    "open": 3120.1,
+                    "high": 3122.0,
+                    "low": 3119.8,
+                    "previous_close": 3118.2,
+                    "intraday_points": [
+                        {"time": "09:30", "timestamp": "2026-05-13T09:30:00+08:00", "value": 3120.1},
+                        {"time": "09:31", "timestamp": "2026-05-13T09:31:00+08:00", "value": 3121.5},
+                    ],
+                },
+            ),
+        )
+        self.repository.statuses[task_id] = SearchTaskStatus.COMPLETED
+        return True
+
+
+class FakeSearchRepository:
+    def __init__(self) -> None:
+        self.statuses: dict[str, SearchTaskStatus] = {}
+
+    def get_task_status(self, task_id: str) -> SearchTaskStatus | None:
+        return self.statuses.get(task_id)
+
+
+class FakeFailedMarketSearchPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[InternalCallEnvelope, object]] = []
+        self.providers = {"akshare": object()}
+        self.repository = FakeSearchRepository()
+        self.repository.statuses["st_failed_intraday"] = SearchTaskStatus.FAILED
+
+    def submit(self, envelope: InternalCallEnvelope, task: object) -> dict[str, object]:
+        self.calls.append((envelope, task))
+        return {
+            "task_id": "st_failed_intraday",
+            "status": SearchTaskStatus.FAILED,
+            "accepted_at": datetime.now(timezone.utc),
+            "idempotency_key": envelope.idempotency_key or "missing",
+            "poll_after_ms": 1000,
+        }
+
+    def run_task_once(self, task_id: str) -> bool:
+        return False

@@ -115,6 +115,37 @@ class EvidenceStoreContractTests(unittest.TestCase):
             [item.reason for item in second_result.rejected_items],
         )
 
+    def test_duplicate_ingest_links_existing_evidence_to_new_workflow(self):
+        store = FakeEvidenceStoreClient()
+        first_envelope = self.make_envelope(idempotency_key="workflow_1")
+        second_envelope = InternalCallEnvelope(
+            request_id="req_evidence_002",
+            correlation_id="corr_evidence_002",
+            workflow_run_id="wr_second",
+            analysis_time=datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc),
+            requested_by="workflow_orchestrator",
+            idempotency_key="workflow_2",
+            trace_level="standard",
+        )
+
+        first_result = store.ingest_search_result(first_envelope, self.make_package(self.make_item()))
+        second_result = store.ingest_search_result(second_envelope, self.make_package(self.make_item()))
+        page = store.query_evidence(
+            second_envelope,
+            {
+                "workflow_run_id": "wr_second",
+                "ticker": "002594",
+                "entity_ids": ["ent_company_002594"],
+                "evidence_types": ["company_news"],
+            },
+        )
+
+        self.assertEqual(["ev_000001"], first_result.created_evidence_ids)
+        self.assertEqual("partial_accepted", second_result.status)
+        self.assertEqual(["ev_000001"], second_result.updated_evidence_ids)
+        self.assertEqual(1, page.total)
+        self.assertEqual("ev_000001", page.items[0].evidence_id)
+
     def test_ingest_rejects_item_published_after_analysis_time(self):
         store = FakeEvidenceStoreClient()
         envelope = self.make_envelope()

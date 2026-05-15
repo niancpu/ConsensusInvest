@@ -44,7 +44,7 @@ def list_workflow_raw_items(
     rows = _workflow_raw_items(evidence_store, workflow_run_id, source=source)
     page = rows[offset : offset + limit]
     return ListResponse(
-        data=[_raw_list_view(row) for row in page],
+        data=[_raw_list_view(row, workflow_run_id=workflow_run_id) for row in page],
         pagination=_pagination(limit=limit, offset=offset, total=len(rows), returned=len(page)),
     )
 
@@ -78,7 +78,15 @@ def list_workflow_evidence(
         ),
     )
     return ListResponse(
-        data=[_evidence_list_view(evidence_store, item, _detail_or_none(evidence_store, item.evidence_id)) for item in page.items],
+        data=[
+            _evidence_list_view(
+                evidence_store,
+                item,
+                _detail_or_none(evidence_store, item.evidence_id),
+                workflow_run_id=workflow_run_id,
+            )
+            for item in page.items
+        ],
         pagination=_pagination(limit=limit, offset=offset, total=page.total, returned=len(page.items)),
     )
 
@@ -193,10 +201,10 @@ def _detail_or_none(evidence_store: EvidenceStoreClient, evidence_id: str) -> Ev
         return None
 
 
-def _raw_list_view(row: RawItem) -> RawItemListView:
+def _raw_list_view(row: RawItem, *, workflow_run_id: str | None = None) -> RawItemListView:
     return RawItemListView(
         raw_ref=row.raw_ref,
-        workflow_run_id=_workflow_run_id(row),
+        workflow_run_id=workflow_run_id or _workflow_run_id(row),
         source=row.source,
         source_type=row.source_type,
         ticker=row.ticker,
@@ -229,11 +237,13 @@ def _evidence_list_view(
     evidence_store: EvidenceStoreClient,
     item: EvidenceItem,
     detail: EvidenceDetail | None,
+    *,
+    workflow_run_id: str | None = None,
 ) -> EvidenceListItemView:
     structure = detail.structure if detail is not None else None
     return EvidenceListItemView(
         evidence_id=item.evidence_id,
-        workflow_run_id=_evidence_workflow_run_id(evidence_store, item),
+        workflow_run_id=workflow_run_id or _evidence_workflow_run_id(evidence_store, item),
         ticker=item.ticker,
         source=item.source,
         source_type=item.source_type,

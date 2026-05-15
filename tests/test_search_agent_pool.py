@@ -554,6 +554,25 @@ class SearchAgentPoolContractTests(unittest.TestCase):
         self.assertEqual([], provider.search_calls)
         self.assertEqual([], evidence_store.ingest_calls)
 
+    def test_run_task_once_retries_failed_task(self):
+        evidence_store = RecordingEvidenceStore()
+        provider = FakeProvider("tavily")
+        pool = self.make_pool([provider], evidence_store)
+        envelope = self.make_envelope(idempotency_key="search_failed_retry_key")
+        task = self.make_task(sources=["tavily"], idempotency_key="search_failed_retry_key")
+        status_enum = self.search_models.SearchTaskStatus
+
+        receipt = pool.submit(envelope, task)
+        task_id = _get_value(receipt, "task_id")
+        pool.repository.update_task_status(task_id, status_enum.FAILED)
+
+        executed = pool.run_task_once(task_id)
+        status = pool.get_status(envelope, task_id)
+
+        self.assertTrue(executed)
+        self.assert_task_status(status, "completed")
+        self.assertEqual(1, len(provider.search_calls))
+
     def test_pool_consumes_evidence_store_ingest_result_without_exposing_ids(self):
         evidence_store = self.evidence_client_module.FakeEvidenceStoreClient()
         pool = self.make_pool([FakeProvider("tavily")], evidence_store)

@@ -143,11 +143,13 @@ class InMemoryEvidenceStoreClient:
         self._evidence_items: dict[str, EvidenceItem] = {}
         self._evidence_by_raw_ref: dict[str, str] = {}
         self._evidence_entities: dict[str, set[str]] = {}
+        self._workflow_evidence_links: dict[str, set[str]] = {}
         self._structures_by_evidence_id: dict[str, list[EvidenceStructure]] = {}
         self._references: list[EvidenceReference] = []
         self._market_snapshots: dict[str, MarketSnapshot] = {}
         self._seen_item_keys: set[str] = set()
         self._seen_content_keys: set[str] = set()
+        self._dedupe_key_to_evidence_id: dict[str, str] = {}
         self._next_raw_id = 1
         self._next_evidence_id = 1
         self._next_structure_id = 1
@@ -166,6 +168,7 @@ class InMemoryEvidenceStoreClient:
 
         accepted_raw_refs: list[str] = []
         created_evidence_ids: list[str] = []
+        updated_evidence_ids: list[str] = []
         rejected_items: list[IngestRejectedItem] = []
 
         normalized = self.normalizer.normalize_search_result(envelope, package)
@@ -174,6 +177,9 @@ class InMemoryEvidenceStoreClient:
         for draft in normalized.drafts:
             duplicate_key = self._existing_dedupe_key(draft.dedupe_keys)
             if duplicate_key is not None:
+                existing_evidence_id = self._dedupe_key_to_evidence_id.get(duplicate_key)
+                if self._link_workflow_evidence(envelope.workflow_run_id, existing_evidence_id):
+                    updated_evidence_ids.append(existing_evidence_id)
                 rejected_items.append(
                     IngestRejectedItem(
                         external_id=draft.external_id,
@@ -195,14 +201,15 @@ class InMemoryEvidenceStoreClient:
             self._evidence_items[evidence_item.evidence_id] = evidence_item
             self._evidence_by_raw_ref[raw_item.raw_ref] = evidence_item.evidence_id
             self._index_evidence_entities(evidence_item)
-            self._remember_dedupe_keys(draft.dedupe_keys)
+            self._remember_dedupe_keys(draft.dedupe_keys, evidence_item.evidence_id)
+            self._link_workflow_evidence(envelope.workflow_run_id, evidence_item.evidence_id)
 
             accepted_raw_refs.append(raw_item.raw_ref)
             created_evidence_ids.append(evidence_item.evidence_id)
 
-        if accepted_raw_refs and rejected_items:
+        if (accepted_raw_refs or updated_evidence_ids) and rejected_items:
             status = "partial_accepted"
-        elif accepted_raw_refs:
+        elif accepted_raw_refs or updated_evidence_ids:
             status = "accepted"
         else:
             status = "rejected"
@@ -213,7 +220,7 @@ class InMemoryEvidenceStoreClient:
             status=status,
             accepted_raw_refs=accepted_raw_refs,
             created_evidence_ids=created_evidence_ids,
-            updated_evidence_ids=[],
+            updated_evidence_ids=updated_evidence_ids,
             rejected_items=rejected_items,
         )
 
@@ -240,7 +247,12 @@ class InMemoryEvidenceStoreClient:
             and _source_quality_at_least(item.source_quality, evidence_query.source_quality_min)
             and _datetime_lte(item.publish_time, publish_lte)
             and _datetime_gte(item.publish_time, publish_gte)
-            and _matches_workflow_run_id(item, evidence_query.workflow_run_id, self._raw_items)
+            and _matches_workflow_run_id(
+                item,
+                evidence_query.workflow_run_id,
+                self._raw_items,
+                self._workflow_evidence_links,
+            )
         ]
         rows.sort(key=_evidence_sort_key, reverse=True)
         total = len(rows)
@@ -523,12 +535,23 @@ class InMemoryEvidenceStoreClient:
                 return key
         return None
 
-    def _remember_dedupe_keys(self, item_keys: tuple[str, ...]) -> None:
+    def _remember_dedupe_keys(self, item_keys: tuple[str, ...], evidence_id: str) -> None:
         for key in item_keys:
+            self._dedupe_key_to_evidence_id[key] = evidence_id
             if key.startswith("content:"):
                 self._seen_content_keys.add(key)
             else:
                 self._seen_item_keys.add(key)
+
+    def _link_workflow_evidence(self, workflow_run_id: str | None, evidence_id: str | None) -> bool:
+        workflow_id = _clean_key_value(workflow_run_id)
+        evidence_key = _clean_key_value(evidence_id)
+        if workflow_id is None or evidence_key is None:
+            return False
+        linked = self._workflow_evidence_links.setdefault(workflow_id, set())
+        before = len(linked)
+        linked.add(evidence_key)
+        return len(linked) > before
 
     def _index_evidence_entities(self, item: EvidenceItem) -> None:
         for entity_id in item.entity_ids:
@@ -555,13 +578,19 @@ def _matches_workflow_run_id(
     item: EvidenceItem,
     workflow_run_id: str | None,
     raw_items: Mapping[str, RawItem],
+    workflow_links: Mapping[str, set[str]] | None = None,
 ) -> bool:
     if workflow_run_id is None:
         return True
     raw_item = raw_items.get(item.raw_ref)
     if raw_item is None:
-        return False
-    return raw_item.ingest_context.get("workflow_run_id") == workflow_run_id
+        linked_evidence_ids = workflow_links.get(workflow_run_id) if workflow_links is not None else None
+        return linked_evidence_ids is not None and item.evidence_id in linked_evidence_ids
+    raw_workflow_run_id = raw_item.ingest_context.get("workflow_run_id")
+    if raw_workflow_run_id == workflow_run_id:
+        return True
+    linked_evidence_ids = workflow_links.get(workflow_run_id) if workflow_links is not None else None
+    return linked_evidence_ids is not None and item.evidence_id in linked_evidence_ids
 
 
 def _ingest_context(envelope: InternalCallEnvelope, *, task_id: str | None) -> dict[str, Any]:

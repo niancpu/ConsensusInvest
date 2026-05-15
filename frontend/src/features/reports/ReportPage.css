@@ -1,0 +1,308 @@
+.report-page {
+  --blue: #002fa7;
+  --black: #000000;
+  --white: #ffffff;
+  min-height: 100vh;
+  background: var(--white);
+  color: var(--black);
+  border: 1px solid var(--black);
+}
+
+.report-nav {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 2fr;
+  align-items: center;
+  min-height: 72px;
+  border-bottom: 2px solid var(--black);
+}
+
+.report-shell {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 320px;
+  min-height: calc(100vh - 72px);
+}
+
+.report-sidebar {
+  padding: 28px 22px;
+  background: var(--blue);
+  color: var(--white);
+  border-right: 1px solid var(--black);
+}
+
+.report-sidebar h1 {
+  margin: 0 0 22px;
+  font-size: 25px;
+}
+
+.report-search {
+  display: grid;
+  gap: 10px;
+}
+
+.report-search input,
+.report-search button {
+  min-height: 42px;
+  border: 1px solid var(--white);
+  font: 700 14px "Courier New", monospace;
+}
+
+.report-search input {
+  padding: 0 12px;
+  color: var(--black);
+}
+
+.report-search button,
+.secondary-action {
+  background: transparent;
+  color: var(--white);
+  cursor: pointer;
+}
+
+.report-search button:hover,
+.report-search button:focus-visible {
+  background: var(--white);
+  color: var(--blue);
+  outline: none;
+}
+
+.report-meta {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  margin: 24px 0;
+  padding: 14px 0;
+  border-top: 1px solid var(--white);
+  border-bottom: 1px solid var(--white);
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+}
+
+.report-meta strong {
+  overflow-wrap: anywhere;
+}
+
+.search-hits {
+  display: grid;
+  gap: 8px;
+}
+
+.search-hits button {
+  display: flex;
+  justify-content: space-between;
+  min-height: 38px;
+  border: 1px solid var(--white);
+  background: transparent;
+  color: var(--white);
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.search-hits button:hover,
+.search-hits button:focus-visible {
+  background: var(--white);
+  color: var(--blue);
+  outline: none;
+}
+
+.report-error {
+  margin-top: 18px;
+  padding: 10px;
+  background: var(--white);
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.report-main {
+  min-width: 0;
+  padding: 30px 26px;
+}
+
+.report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 2px solid var(--black);
+  padding-bottom: 18px;
+}
+
+.report-heading span {
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.report-heading h2 {
+  margin: 5px 0 0;
+  font-size: 28px;
+}
+
+.secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 130px;
+  min-height: 40px;
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  font-weight: 800;
+}
+
+.secondary-action:hover,
+.secondary-action:focus-visible {
+  background: var(--white);
+  color: var(--blue);
+  outline: none;
+}
+
+.report-summary {
+  padding: 24px 0;
+  border-bottom: 1px solid var(--black);
+}
+
+.report-summary h3 {
+  margin: 0 0 10px;
+  font-size: 22px;
+}
+
+.report-summary p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.signal-pill {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--black);
+  font-family: "Courier New", monospace;
+}
+
+.signal-pill.positive {
+  border-color: #0074ff;
+}
+
+.signal-pill.negative {
+  border-color: #b91c1c;
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  padding-top: 22px;
+}
+
+.report-panel {
+  border: 2px solid var(--black);
+  min-height: 220px;
+}
+
+.report-panel h3,
+.market-report h2,
+.market-report h3 {
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--black);
+  font-size: 17px;
+}
+
+.report-panel > div {
+  padding: 14px;
+}
+
+.report-item {
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px dotted var(--black);
+}
+
+.report-item h4 {
+  margin: 0 0 7px;
+}
+
+.report-item p {
+  margin: 0 0 6px;
+  line-height: 1.55;
+}
+
+.report-item small {
+  font-family: "Courier New", monospace;
+  overflow-wrap: anywhere;
+}
+
+.market-report {
+  padding: 30px 18px;
+  border-left: 1px solid var(--black);
+}
+
+.market-state {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  padding: 14px;
+  border-right: 2px solid var(--black);
+  border-bottom: 2px solid var(--black);
+  border-left: 2px solid var(--black);
+  font-family: "Courier New", monospace;
+}
+
+.market-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+  min-height: 34px;
+  align-items: center;
+  border-bottom: 1px dotted var(--black);
+  font-family: "Courier New", monospace;
+  font-size: 12px;
+}
+
+.market-row em {
+  font-style: normal;
+}
+
+.market-row .up {
+  color: #0074ff;
+}
+
+.market-row .down {
+  color: #b91c1c;
+}
+
+.warning-item {
+  padding: 12px 0;
+  border-bottom: 1px dotted var(--black);
+}
+
+.warning-item p {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .report-shell {
+    grid-template-columns: 280px minmax(560px, 1fr);
+    overflow-x: auto;
+  }
+
+  .market-report {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .report-nav,
+  .report-shell,
+  .report-grid {
+    display: block;
+  }
+
+  .report-sidebar,
+  .report-main,
+  .market-report {
+    padding: 22px 16px;
+  }
+}

@@ -5,6 +5,7 @@ Error codes follow `docs/web_api/appendix.md` §17.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -12,6 +13,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .response import ErrorBody, ErrorResponse, Meta
+
+logger = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -71,3 +74,16 @@ def install_error_handlers(app: FastAPI) -> None:
             meta=Meta(),
         )
         return JSONResponse(status_code=400, content=body.model_dump(exclude_none=True))
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("Unhandled API error on %s %s", request.method, request.url.path, exc_info=exc)
+        body = ErrorResponse(
+            error=ErrorBody(
+                code="INTERNAL_ERROR",
+                message="服务器处理失败，请查看后端日志；如果是本地运行，先确认模型和数据源密钥是否已配置。",
+                details={"path": request.url.path},
+            ),
+            meta=Meta(),
+        )
+        return JSONResponse(status_code=500, content=body.model_dump(exclude_none=True))

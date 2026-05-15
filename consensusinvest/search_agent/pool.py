@@ -103,6 +103,24 @@ class SearchAgentPool:
             self._run_task(task_id, task, self._envelopes.get(task_id))
         return task_ids
 
+    def run_task_once(self, task_id: str) -> bool:
+        status = self.repository.get_task_status(task_id)
+        status_value = _value(status, "status", status)
+        if status_value not in (
+            SearchTaskStatus.QUEUED,
+            SearchTaskStatus.RUNNING,
+            SearchTaskStatus.FAILED,
+            SearchTaskStatus.QUEUED.value,
+            SearchTaskStatus.RUNNING.value,
+            SearchTaskStatus.FAILED.value,
+        ):
+            return False
+        task = self.repository.get_task(task_id)
+        if task is None:
+            return False
+        self._run_task(task_id, task, self._envelopes.get(task_id))
+        return True
+
     def _run_task(self, task_id: str, task: SearchTask, envelope: Any) -> None:
         self.repository.update_task_status(task_id, SearchTaskStatus.RUNNING)
 
@@ -454,14 +472,24 @@ def _ingested_count(result: Any) -> int:
         value = getattr(result, name, None)
         if isinstance(value, int):
             return value
-    for name in ("created_evidence_ids", "accepted_raw_refs"):
+    count = 0
+    for name in ("created_evidence_ids", "updated_evidence_ids"):
         value = getattr(result, name, None)
         if isinstance(value, list):
-            return len(value)
+            count += len(value)
+    if count:
+        return count
+    raw_refs = getattr(result, "accepted_raw_refs", None)
+    if isinstance(raw_refs, list):
+        return len(raw_refs)
     if isinstance(result, dict):
-        evidence_ids = result.get("created_evidence_ids")
-        if isinstance(evidence_ids, list):
-            return len(evidence_ids)
+        count = 0
+        for name in ("created_evidence_ids", "updated_evidence_ids"):
+            value = result.get(name)
+            if isinstance(value, list):
+                count += len(value)
+        if count:
+            return count
         raw_refs = result.get("accepted_raw_refs")
         if isinstance(raw_refs, list):
             return len(raw_refs)

@@ -34,6 +34,7 @@ Create workflow_run
 边界：
 
 - 主 workflow 可以触发 Search Agent，但 Search Agent 结果必须先入 Evidence Store。
+- 主 workflow 可以复用已入库 Evidence；重复搜索命中既有 Evidence 时，应建立本次 `workflow_run_id` 到既有 `evidence_id` 的关联，而不是复制 Evidence 或把重复结果当成无可用 Evidence。
 - Evidence 不足时，Orchestrator 默认把 `EvidenceGap` 交给 `EvidenceAcquisitionService`，由它转换为 SearchTask 并重试补齐。
 - 重试仍无法补齐时，主 workflow 输出信息不足状态和缺口说明，不把缺证场景伪装成完整判断。
 
