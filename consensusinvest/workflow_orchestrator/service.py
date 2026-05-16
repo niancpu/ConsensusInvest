@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 import os
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -54,6 +56,9 @@ class WorkflowOrchestrator:
         self.evidence_structurer = evidence_structurer or EvidenceStructuringAgent(
             evidence_store=evidence_store
         )
+        self._run_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="workflow-run")
+        self._run_futures: dict[str, Future] = {}
+        self._run_futures_lock = Lock()
 
     def create_run(self, request: WorkflowRunCreate) -> WorkflowRunRecord:
         now = _timestamp(request.analysis_time)
@@ -94,8 +99,19 @@ class WorkflowOrchestrator:
                     "missing_runtime_configuration",
                     config_error,
                 )
-            return self.run_once(workflow_run_id)
+            self.start_run(workflow_run_id)
         return run
+
+    def start_run(self, workflow_run_id: str) -> None:
+        self._required_run(workflow_run_id)
+        with self._run_futures_lock:
+            future = self._run_futures.get(workflow_run_id)
+            if future is not None and not future.done():
+                return
+            self._run_futures[workflow_run_id] = self._run_executor.submit(
+                self.run_once,
+                workflow_run_id,
+            )
 
     def run_once(self, workflow_run_id: str) -> WorkflowRunRecord:
         run = self._required_run(workflow_run_id)
@@ -287,8 +303,6 @@ class WorkflowOrchestrator:
 
     def trace(self, workflow_run_id: str) -> tuple[list[WorkflowTraceNode], list[WorkflowTraceEdge]]:
         run = self._required_run(workflow_run_id)
-        if run.status != "completed":
-            return [], []
         nodes: list[WorkflowTraceNode] = []
         edges: list[WorkflowTraceEdge] = []
         judgment = self.agent_swarm.repository.get_judgment_by_workflow(workflow_run_id)

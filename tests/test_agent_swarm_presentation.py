@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from consensusinvest.agent_swarm.models import AgentArgumentRecord, RoundSummaryRecord
 from consensusinvest.agent_swarm.presentation import (
     display_agent_argument_text,
+    display_judgment_reasoning,
     repair_mojibake_text,
 )
 from consensusinvest.agent_swarm.router import _argument_view, _round_summary_view
@@ -74,3 +75,33 @@ def test_round_summary_api_projection_sanitizes_legacy_english_summary() -> None
 
     assert "第 1 轮辩论摘要" in view.summary
     assert "LLM round summary" not in view.summary
+
+
+def test_judgment_display_falls_back_for_generic_or_mojibake_reasoning() -> None:
+    text = display_judgment_reasoning(
+        reasoning="基于已保存智能体论证和关键证据形成判断。",
+        final_signal="neutral",
+        confidence=0.52,
+        positive_evidence_ids=("ev_000022",),
+        negative_evidence_ids=("ev_000023",),
+        referenced_agent_argument_ids=("arg_000001",),
+    )
+
+    assert "最终判断为中性，置信度 0.52" in text
+    assert "arg_000001" in text
+    assert "ev_000022" in text
+    assert "基于已保存智能体论证和关键证据形成判断" not in text
+
+
+def test_judgment_display_falls_back_for_mojibake_reasoning() -> None:
+    text = display_judgment_reasoning(
+        reasoning="0.52 / ç□æ□□ï¼□1-4å□ï¼□",
+        final_signal="neutral",
+        confidence=0.52,
+        positive_evidence_ids=("ev_000022",),
+        negative_evidence_ids=("ev_000023",),
+        referenced_agent_argument_ids=("arg_000001",),
+    )
+
+    assert "最终判断为中性，置信度 0.52" in text
+    assert "ç" not in text

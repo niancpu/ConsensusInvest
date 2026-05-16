@@ -67,7 +67,7 @@ class JudgmentLinks(TraceableModel):
 class JudgmentView(TraceableModel):
     judgment_id: str
     workflow_run_id: str
-    final_signal: Literal["bullish", "neutral", "bearish"]
+    final_signal: Literal["bullish", "neutral", "bearish", "insufficient_evidence"]
     confidence: float
     time_horizon: str
     key_positive_evidence_ids: list[str] = Field(default_factory=list)

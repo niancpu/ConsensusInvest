@@ -15,6 +15,8 @@ from consensusinvest.evidence_store.presentation import display_text_for_raw_pay
 from consensusinvest.agent_swarm.presentation import (
     chinese_sequence,
     chinese_text_or_none,
+    display_judgment_reasoning,
+    repair_mojibake_text,
     sanitize_role_output_for_display,
 )
 from consensusinvest.runtime import InternalCallEnvelope, RuntimeEvent
@@ -394,10 +396,11 @@ def _build_argument_draft(
         counter_evidence_ids=counter_ids,
         limitations=(agent_config.limitation,),
         role_output={
-            agent_config.stance_output_key: (
-                "证据整体支持当前投资假设，但结论必须能通过证据引用回查。"
+            agent_config.stance_output_key: agent_config.deterministic_interpretation,
+            agent_config.impact_output_key: round(
+                min(1.0, max(0.0, confidence + agent_config.impact_adjustment)),
+                2,
             ),
-            agent_config.impact_output_key: round(max(0.0, confidence - 0.08), 2),
             "round": round_number,
             "total_rounds": total_rounds,
         },
@@ -457,6 +460,16 @@ def _build_llm_argument_draft(
             "stance_output_key": agent_config.stance_output_key,
             "impact_output_key": agent_config.impact_output_key,
             "default_limitation": agent_config.limitation,
+        },
+        "agent_config": {
+            "agent_id": agent_config.agent_id,
+            "role": agent_config.role,
+            "stance_label": agent_config.stance_label,
+            "thesis_label": agent_config.thesis_label,
+            "stance_output_key": agent_config.stance_output_key,
+            "impact_output_key": agent_config.impact_output_key,
+            "default_limitation": agent_config.limitation,
+            "deterministic_interpretation": agent_config.deterministic_interpretation,
         },
         "allowed_evidence_ids": list(allowed_ids),
         "preferred_support_ids": list(support_ids),
@@ -752,16 +765,23 @@ def _build_judgment_record(
     final_signal = _clean_key_value(raw.get("final_signal")) or ("neutral" if negative_ids else "bullish")
     if final_signal not in {"bullish", "bearish", "neutral", "insufficient_evidence"}:
         final_signal = "neutral"
+    confidence = _bounded_float(raw.get("confidence"), default=0.74)
+    final_reasoning = _clean_chinese_text(raw.get("reasoning")) or _judgment_reasoning_fallback(
+        final_signal=final_signal,
+        confidence=confidence,
+        positive_evidence_ids=llm_positive or positive_ids,
+        negative_evidence_ids=llm_negative or negative_ids,
+        referenced_agent_argument_ids=llm_argument_ids or argument_ids,
+    )
     return JudgmentRecord(
         judgment_id=repository.new_judgment_id(),
         workflow_run_id=judge_input.workflow_run_id,
         final_signal=final_signal,
-        confidence=_bounded_float(raw.get("confidence"), default=0.74),
-        time_horizon=_clean_key_value(raw.get("time_horizon")) or "short_to_mid_term",
+        confidence=confidence,
+        time_horizon=_clean_ascii_token(raw.get("time_horizon")) or "short_to_mid_term",
         key_positive_evidence_ids=llm_positive or positive_ids,
         key_negative_evidence_ids=llm_negative or negative_ids,
-        reasoning=_clean_chinese_text(raw.get("reasoning"))
-        or "基于已保存智能体论证和关键证据形成判断。",
+        reasoning=final_reasoning,
         risk_notes=tuple(_clean_chinese_sequence(raw.get("risk_notes"))),
         suggested_next_checks=tuple(_clean_chinese_sequence(raw.get("suggested_next_checks"))),
         referenced_agent_argument_ids=llm_argument_ids or argument_ids,
@@ -1238,11 +1258,42 @@ def _filter_ids(values: list[str], allowed_ids: tuple[str, ...]) -> tuple[str, .
     return _unique_ids(value for value in values if value in allowed)
 
 
+def _judgment_reasoning_fallback(
+    *,
+    final_signal: str,
+    confidence: float,
+    positive_evidence_ids: tuple[str, ...],
+    negative_evidence_ids: tuple[str, ...],
+    referenced_agent_argument_ids: tuple[str, ...],
+) -> str:
+    return display_judgment_reasoning(
+        reasoning=None,
+        final_signal=final_signal,
+        confidence=confidence,
+        positive_evidence_ids=positive_evidence_ids,
+        negative_evidence_ids=negative_evidence_ids,
+        referenced_agent_argument_ids=referenced_agent_argument_ids,
+    )
+
+
 def _clean_key_value(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    text = repair_mojibake_text(value)
+    if text is None:
+        return None
+    text = text.strip()
     return text or None
+
+
+def _clean_ascii_token(value: Any) -> str | None:
+    text = _clean_key_value(value)
+    if text is None:
+        return None
+    allowed = {"_", "-", " "}
+    if not all(char.isascii() and (char.isalnum() or char in allowed) for char in text):
+        return None
+    return text
 
 
 def _clean_sequence(value: Any) -> list[str]:

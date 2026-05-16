@@ -4,6 +4,7 @@ import type { WorkflowEvent } from '../types/workflow';
 
 export type WorkflowStreamHandlers = {
   onMessage: (event: WorkflowEvent) => void;
+  onClose?: () => void;
   onOpen?: () => void;
   onReplaying?: () => void;
   onError?: (reason: string) => void;
@@ -34,6 +35,8 @@ const STREAM_EVENT_TYPES = [
   'workflow_failed',
 ];
 
+const TERMINAL_EVENT_TYPES = new Set(['workflow_completed', 'workflow_failed']);
+
 export function useWorkflowStream(workflowRunId: string, handlers: WorkflowStreamHandlers): void {
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
@@ -49,6 +52,10 @@ export function useWorkflowStream(workflowRunId: string, handlers: WorkflowStrea
       try {
         const parsed = JSON.parse(message.data) as WorkflowEvent;
         handlersRef.current.onMessage(parsed);
+        if (TERMINAL_EVENT_TYPES.has(parsed.event_type)) {
+          source.close();
+          handlersRef.current.onClose?.();
+        }
       } catch {
         handlersRef.current.onParseError?.();
       }

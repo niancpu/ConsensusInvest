@@ -50,6 +50,37 @@ class FakeLLMProvider:
         raise AssertionError(f"unexpected purpose: {purpose}")
 
 
+class MojibakeJudgeLLMProvider(FakeLLMProvider):
+    def complete_json(self, *, purpose, system_prompt, user_payload, model=None):
+        if purpose != "judge":
+            return super().complete_json(
+                purpose=purpose,
+                system_prompt=system_prompt,
+                user_payload=user_payload,
+                model=model,
+            )
+        self.calls.append(
+            {
+                "purpose": purpose,
+                "system_prompt": system_prompt,
+                "user_payload": user_payload,
+                "model": model,
+            }
+        )
+        return {
+            "final_signal": "neutral",
+            "confidence": 0.52,
+            "time_horizon": "ç□æ□□ï¼□1-4å□ï¼□",
+            "key_positive_evidence_ids": ["ev_000001"],
+            "key_negative_evidence_ids": ["ev_000002"],
+            "reasoning": "ç□æ□□ï¼□1-4å□ï¼□",
+            "risk_notes": [],
+            "suggested_next_checks": [],
+            "referenced_agent_argument_ids": ["arg_000001"],
+            "limitations": [],
+        }
+
+
 class AgentSwarmRuntimeTests(unittest.TestCase):
     def make_envelope(self, *, idempotency_key="agent_swarm") -> InternalCallEnvelope:
         return InternalCallEnvelope(
@@ -122,7 +153,7 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual("completed", outcome.status)
-        self.assertEqual(3, len(outcome.agent_argument_ids))
+        self.assertEqual(6, len(outcome.agent_argument_ids))
         self.assertEqual(3, len(outcome.round_summary_ids))
         self.assertEqual(outcome.round_summary_ids[-1], outcome.round_summary_id)
         refs = store.query_references(
@@ -137,8 +168,22 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         summaries = runtime.repository.list_round_summaries("wr_agent_swarm_001")
         self.assertEqual([1, 2, 3], [summary.round for summary in summaries])
         self.assertEqual(list(outcome.round_summary_ids), [summary.round_summary_id for summary in summaries])
+        self.assertEqual(
+            [("bull_v1", "bear_v1"), ("bull_v1", "bear_v1"), ("bull_v1", "bear_v1")],
+            [summary.participants for summary in summaries],
+        )
         runs = runtime.repository.list_agent_runs("wr_agent_swarm_001")
-        self.assertEqual((1, 2, 3), runs[0].rounds)
+        self.assertEqual(["bear_v1", "bull_v1"], sorted(run.agent_id for run in runs))
+        self.assertEqual([(1, 2, 3), (1, 2, 3)], [run.rounds for run in runs])
+        arguments = runtime.repository.list_arguments("wr_agent_swarm_001")
+        self.assertEqual(
+            [(1, "bull_v1"), (1, "bear_v1"), (2, "bull_v1"), (2, "bear_v1"), (3, "bull_v1"), (3, "bear_v1")],
+            [(argument.round, argument.agent_id) for argument in arguments],
+        )
+        bear_argument = arguments[1]
+        self.assertEqual("bear_v1", bear_argument.agent_id)
+        self.assertIn("审慎反方复核", bear_argument.argument)
+        self.assertIn("现金流", bear_argument.role_output["risk_interpretation"])
 
     def test_swarm_returns_gap_without_calling_search_when_evidence_empty(self):
         runtime = AgentSwarmRuntime(evidence_store=FakeEvidenceStoreClient())
@@ -182,15 +227,21 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual(("ev_000001",), first_argument.referenced_evidence_ids)
         self.assertEqual(("ev_000002",), first_argument.counter_evidence_ids)
         self.assertIn("第 1/3 轮", runtime.repository.list_round_summaries("wr_agent_swarm_001")[0].summary)
-        self.assertEqual(["agent_argument", "round_summary"] * 3, [call["purpose"] for call in llm.calls])
+        self.assertEqual(
+            ["agent_argument", "agent_argument", "round_summary"] * 3,
+            [call["purpose"] for call in llm.calls],
+        )
         agent_prompt = next(call["system_prompt"] for call in llm.calls if call["purpose"] == "agent_argument")
         summary_prompt = next(call["system_prompt"] for call in llm.calls if call["purpose"] == "round_summary")
         self.assertIn("必须使用简体中文", agent_prompt)
         self.assertIn("必须使用简体中文", summary_prompt)
         self.assertEqual("zh-CN", llm.calls[0]["user_payload"]["language"])
-        self.assertEqual("zh-CN", llm.calls[1]["user_payload"]["language"])
+        self.assertEqual("zh-CN", llm.calls[2]["user_payload"]["language"])
         self.assertIn("只允许简体中文", llm.calls[0]["user_payload"]["output_schema"]["argument"])
-        self.assertIn("只允许简体中文", llm.calls[1]["user_payload"]["output_schema"]["summary"])
+        self.assertIn("只允许简体中文", llm.calls[2]["user_payload"]["output_schema"]["summary"])
+        self.assertEqual("bull_v1", llm.calls[0]["user_payload"]["agent_config"]["agent_id"])
+        self.assertEqual("bear_v1", llm.calls[1]["user_payload"]["agent_config"]["agent_id"])
+        self.assertEqual(["ev_000001", "ev_000002"], llm.calls[1]["user_payload"]["allowed_evidence_ids"])
 
     def test_swarm_llm_payload_repairs_reused_numeric_evidence_from_raw_payload(self):
         store = FakeEvidenceStoreClient()
@@ -322,7 +373,9 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual(("ev_000001",), judgment.key_positive_evidence_ids)
         self.assertEqual(("ev_000002",), judgment.key_negative_evidence_ids)
         self.assertEqual(("arg_000001",), judgment.referenced_agent_argument_ids)
-        self.assertEqual("基于已保存智能体论证和关键证据形成判断。", judgment.reasoning)
+        self.assertIn("最终判断为偏多", judgment.reasoning)
+        self.assertIn("arg_000001", judgment.reasoning)
+        self.assertIn("ev_000001", judgment.reasoning)
         self.assertEqual((), judgment.risk_notes)
         self.assertEqual((), judgment.suggested_next_checks)
         self.assertIn("裁决模块未直接触发搜索", judgment.limitations[0])
@@ -336,12 +389,51 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
             judge_call["user_payload"]["round_summary_ids"],
         )
         self.assertEqual(
+            list(swarm_outcome.agent_argument_ids),
+            judge_call["user_payload"]["allowed_agent_argument_ids"],
+        )
+        self.assertEqual(6, len(judge_call["user_payload"]["arguments"]))
+        self.assertEqual(
             list(swarm_outcome.round_summary_ids),
             [
                 summary["round_summary_id"]
                 for summary in judge_call["user_payload"]["round_summaries"]
             ],
         )
+
+    def test_judge_sanitizes_mojibake_reasoning_and_time_horizon(self):
+        store = self.make_store()
+        llm = MojibakeJudgeLLMProvider()
+        envelope = self.make_envelope(idempotency_key="run_swarm_before_mojibake_judge")
+        swarm = AgentSwarmRuntime(evidence_store=store)
+        swarm_outcome = swarm.run(
+            envelope,
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": ["ev_000001", "ev_000002"]},
+            },
+        )
+        judge = JudgeRuntime(evidence_store=store, repository=swarm.repository, llm_provider=llm)
+
+        outcome = judge.run(
+            self.make_envelope(idempotency_key="run_mojibake_judge"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "round_summary_ids": list(swarm_outcome.round_summary_ids),
+                "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                "key_evidence_ids": ["ev_000001", "ev_000002"],
+            },
+        )
+
+        judgment = swarm.repository.get_judgment(outcome.judgment_id or "")
+        self.assertIsNotNone(judgment)
+        assert judgment is not None
+        self.assertEqual("short_to_mid_term", judgment.time_horizon)
+        self.assertIn("最终判断为中性，置信度 0.52", judgment.reasoning)
+        self.assertNotIn("ç", judgment.reasoning)
 
     def test_judge_returns_insufficient_evidence_when_round_summary_missing(self):
         store = self.make_store()

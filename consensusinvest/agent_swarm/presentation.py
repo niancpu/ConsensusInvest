@@ -13,7 +13,7 @@ _URL_RE = re.compile(r"https?://\S+")
 _EVIDENCE_ID_RE = re.compile(r"\bev_\d+\b", re.IGNORECASE)
 _ARGUMENT_ID_RE = re.compile(r"\barg_\d+\b", re.IGNORECASE)
 _TICKER_RE = re.compile(r"\b\d{6}(?:\.[A-Z]{2})?\b")
-_MOJIBAKE_HINT_RE = re.compile(r"[\u0080-\u009f]|[ÃÂâ]|[äåæéè][\u0080-\u00ff]")
+_MOJIBAKE_HINT_RE = re.compile(r"[\u0080-\u009f\ufffd\u25a1]|[ÃÂâ]|[äåæçéè][\u0080-\u00ff]")
 
 
 def repair_mojibake_text(value: Any) -> str | None:
@@ -135,7 +135,7 @@ def display_judgment_reasoning(
     negative_evidence_ids: Iterable[str],
     referenced_agent_argument_ids: Iterable[str],
 ) -> str:
-    if text := chinese_text_or_none(reasoning):
+    if (text := chinese_text_or_none(reasoning)) and not _is_generic_judgment_reasoning(text):
         return text
     return (
         f"最终判断为{final_signal_label(final_signal)}，置信度 {confidence:.2f}。"
@@ -151,6 +151,14 @@ def display_chinese_notes(value: Any, *, fallback: str | None = None) -> list[st
     if cleaned:
         return cleaned
     return [fallback] if fallback and _sequence(value) else []
+
+
+def _is_generic_judgment_reasoning(text: str) -> bool:
+    generic_phrases = (
+        "基于已保存智能体论证和关键证据形成判断",
+        "基于已保存轮次摘要、智能体论证和关键证据",
+    )
+    return any(phrase in text for phrase in generic_phrases)
 
 
 def agent_role_label(role: str) -> str:

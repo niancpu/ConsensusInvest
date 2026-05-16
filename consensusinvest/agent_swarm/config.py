@@ -15,6 +15,8 @@ class DebateAgentConfig:
     stance_output_key: str
     impact_output_key: str
     limitation: str
+    deterministic_interpretation: str
+    impact_adjustment: float = -0.08
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +44,19 @@ MVP_BULL_JUDGE_CONFIG = DebateWorkflowConfig(
             stance_output_key="stance_interpretation",
             impact_output_key="bullish_impact_assessment",
             limitation="缺少完整同业对比和估值敏感性验证。",
+            deterministic_interpretation="证据整体支持当前投资假设，但结论必须能通过证据引用回查。",
+            impact_adjustment=-0.08,
+        ),
+        DebateAgentConfig(
+            agent_id="bear_v1",
+            role="bearish_reviewer",
+            stance_label="审慎反方复核",
+            thesis_label="风险约束与反向证据假设",
+            stance_output_key="risk_interpretation",
+            impact_output_key="bearish_risk_assessment",
+            limitation="反方判断仍缺少完整现金流、负债结构和行业景气度交叉验证。",
+            deterministic_interpretation="证据虽可支撑部分正向叙事，但仍需优先核对现金流质量、估值压力和反向证据。",
+            impact_adjustment=0.04,
         ),
     ),
 )

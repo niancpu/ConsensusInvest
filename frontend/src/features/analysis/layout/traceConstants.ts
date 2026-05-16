@@ -30,10 +30,11 @@ export const GRAPH_LAYOUT = {
   topPadding: 42,
   sidePadding: 40,
   bottomPadding: 48,
-  rowGap: 126,
+  rowGap: 150,
   minNodeGap: 28,
-  edgeLaneGap: 8,
-  maxEdgeLanes: 9,
+  edgeLaneGap: 16,
+  edgeLaneClearance: 28,
+  maxEdgeLanes: 16,
 };
 
 export const NODE_ORDER: TraceNodeType[] = [

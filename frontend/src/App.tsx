@@ -22,6 +22,7 @@ function App() {
   }, [route.name]);
 
   const analysisTicker = route.name === 'analysis' ? route.query.get('ticker') : null;
+  const analysisRunId = route.name === 'analysis' ? route.query.get('run') : null;
 
   return (
     <>
@@ -29,7 +30,7 @@ function App() {
         <HomePage />
       </RouteSlot>
       <RouteSlot active={route.name === 'analysis'} mounted={visitedRoutes.has('analysis')}>
-        <AnalysisPage routeTicker={analysisTicker} />
+        <AnalysisPage routeTicker={analysisTicker} routeRunId={analysisRunId} />
       </RouteSlot>
       <RouteSlot active={route.name === 'reports'} mounted={visitedRoutes.has('reports')}>
         <ReportPage />

@@ -186,16 +186,25 @@ def stream_workflow_events(
                 "event_type": "snapshot",
                 "created_at": datetime.now(UTC).isoformat(),
                 "payload": _jsonable(_snapshot_view(snapshot).model_dump(exclude_none=True)),
-            }
+        }
             yield _sse(payload)
         for event in service.list_events(workflow_run_id, after_sequence=after_sequence):
             last_sequence = max(last_sequence, event.sequence)
             yield _sse(_event_view(event).model_dump())
+            if _is_terminal_event(event.event_type):
+                return
+        if _is_terminal_run(service, workflow_run_id):
+            return
         while follow and not await request.is_disconnected():
             await asyncio.sleep(1)
-            for event in service.list_events(workflow_run_id, after_sequence=last_sequence):
+            events = service.list_events(workflow_run_id, after_sequence=last_sequence)
+            for event in events:
                 last_sequence = max(last_sequence, event.sequence)
                 yield _sse(_event_view(event).model_dump())
+                if _is_terminal_event(event.event_type):
+                    return
+            if not events and _is_terminal_run(service, workflow_run_id):
+                return
 
     return StreamingResponse(iter_events(), media_type="text/event-stream")
 
@@ -213,6 +222,15 @@ def _not_found(workflow_run_id: str) -> NotFoundError:
         code="WORKFLOW_RUN_NOT_FOUND",
         details={"workflow_run_id": workflow_run_id},
     )
+
+
+def _is_terminal_event(event_type: str) -> bool:
+    return event_type in {"workflow_completed", "workflow_failed"}
+
+
+def _is_terminal_run(service: WorkflowOrchestrator, workflow_run_id: str) -> bool:
+    run = service.get_run(workflow_run_id)
+    return run is not None and run.status in {"completed", "failed", "cancelled"}
 
 
 def _create_view(run: WorkflowRunRecord) -> WorkflowRunCreateView:

@@ -101,9 +101,10 @@ frontend/src
 
 约束：
 
-- 当前没有 `/analysis/runs/{workflow_run_id}` 这种深层路由。`workflow_run_id` 只活在 `AnalysisPage` 组件内 state，刷新页面会丢失。`docs/web_api/overview` 推荐的 deep link 暂未落地，作为未决项保留。
-- 唯一的 query-like 参数：`#analysis?ticker=002594` —— `AnalysisPage` 在 mount 时读取 hash 中的 `ticker` 用作初值。
-- `ReportPage` 和 `HistoryPage` 也不会把 `stock_code` / `workflow_run_id` 写回 URL。
+- 当前没有 `/analysis/runs/{workflow_run_id}` 这种深层路由；分析页使用 hash query 表达可恢复状态。
+- `#analysis?ticker=002594` —— `AnalysisPage` 在 mount 时读取 `ticker` 用作初值。
+- `#analysis?ticker=002594&run=wr_...` —— `AnalysisPage` 读取 `run` 后重新拉 `snapshot` / `trace`，支持 F5 刷新和从历史页回看。
+- `ReportPage` 不会把 `stock_code` 写回 URL。
 
 ## 4. API 客户端组织
 
@@ -188,7 +189,7 @@ GET /api/v1/stocks/{code}/benefits-risks
 
 ### 6.4 历史回看
 
-`HistoryPage` 调 `src/api/workflow.ts:listWorkflowRuns` 列出最近 20 条，点击拉单个详情。当前只展示 `status`、`workflow_config_id`、`judgment_id`、`final_signal`，不拉 snapshot/trace；从详情区只能跳回 `#analysis?ticker=...`，**无法在 HistoryPage 内复现 Trace 图**。这是已知缺口（见第 9 节）。
+`HistoryPage` 调 `src/api/workflow.ts:listWorkflowRuns` 列出最近 20 条，点击拉单个详情。当前只展示 `status`、`workflow_config_id`、`judgment_id`、`final_signal`，不拉 snapshot/trace；从详情区跳到 `#analysis?ticker=...&run=...`，由分析页恢复 Trace 图。
 
 ## 7. 错误与失败展示规则
 
@@ -212,14 +213,13 @@ GET /api/v1/stocks/{code}/benefits-risks
 
 差异（落地实现 ≠ 早期 `frontend_design` 草稿）：
 
-- 路由：使用 hash 而非 BrowserRouter；`workflow_run_id` 不在 URL 中。
+- 路由：使用 hash 而非 BrowserRouter；`workflow_run_id` 通过 `#analysis?...&run=...` 表达，不使用深层路径。
 - 分析页布局：左侧不是 Debate Rail，而是**控制台**（表单 + 数据源 + 代理模式 + 推理状态）。事件带紧贴中间 Trace 图下方，没有单独「顶部上下文栏」。
 - Trace 节点类型新增 `round_summary`；与 web_api 协议保持一致。
 - 历史页只展示摘要，没有内置 Trace / Judgment / Evidence 视图。
 
 未决项：
 
-- 是否把 `workflow_run_id` 写进 URL（`#analysis?run=...`）以支持刷新和分享。
 - 是否在历史详情页复用 `AnalysisPage` 渲染只读 Trace。
 - SSE 断线重连、`Last-Event-ID` / `after_sequence` 是否要在前端真正实现，而不是依赖后端 replay。
 - Report Module 是否独立事件流入口，当前以 `data_state` + `refresh_task_id` 为准。

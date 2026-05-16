@@ -114,6 +114,7 @@ failed
 - `risks` 在 `report_generation` 下只能来自 Evidence Structure 中明确的客观风险披露或限制说明；不能由 Report Module 推断。
 - `benefits`、`risks` 条目必须保留 `evidence_ids`、`market_snapshot_ids`、`workflow_run_id` 或 `judgment_id`；`summary` 必须通过 `trace_refs` 或后续 `summary_refs` 等价字段保留来源。
 - Report Module 不写主链路 `agent_arguments`、`judgments`。
+- Report Module 可以读取历史 Evidence 生成报告视图，但必须在引用 Evidence 的投影中暴露时间字段。个股 `key_evidence` 至少输出 `publish_time` 与 `fetched_at`；报告运行记录另有 `report_run_id` 和 `updated_at` 表示本次视图生成时间。历史 Evidence 只能作为带时间的客观材料使用，不能被包装成新的 Workflow Judgment。
 
 ## 2. report_generation 模式
 

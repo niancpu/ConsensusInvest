@@ -76,7 +76,13 @@ function HistoryPage() {
                   <dd>{selectedRun.final_signal ?? '-'}</dd>
                 </div>
               </dl>
-              <a className="primary-action" href={`#analysis?ticker=${selectedRun.ticker}`}>
+              <a
+                className="primary-action"
+                href={`#analysis?${new URLSearchParams({
+                  ticker: selectedRun.ticker,
+                  run: selectedRun.workflow_run_id,
+                }).toString()}`}
+              >
                 回到分析
               </a>
             </>

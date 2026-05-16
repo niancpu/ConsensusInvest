@@ -165,6 +165,8 @@ def build_stock_analysis_view(
             evidence_id=detail.evidence.evidence_id,
             title=detail.evidence.title or detail.evidence.evidence_id,
             objective_summary=_summary(detail),
+            publish_time=_dt(detail.evidence.publish_time),
+            fetched_at=_dt(detail.evidence.fetched_at),
             source_quality=detail.evidence.source_quality or 0.0,
             relevance=detail.evidence.relevance or 0.0,
         )

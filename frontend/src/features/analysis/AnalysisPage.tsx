@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react';
 import GlobalNav from '../../components/GlobalNav';
 import { formatApiError } from '../../api/errors';
 import {
@@ -31,16 +32,34 @@ type ConnectionState = 'idle' | 'creating' | 'replaying' | 'open' | 'closed' | '
 
 type AnalysisPageProps = {
   routeTicker?: string | null;
+  routeRunId?: string | null;
 };
 
-function AnalysisPage({ routeTicker }: AnalysisPageProps) {
+type GraphPanState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  scrollLeft: number;
+  scrollTop: number;
+};
+
+const MIN_GRAPH_ZOOM = 0.45;
+const MAX_GRAPH_ZOOM = 2.2;
+const WHEEL_ZOOM_SENSITIVITY = 0.002;
+const PINCH_ZOOM_SENSITIVITY = 0.01;
+
+function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   const initialTicker = routeTicker ?? '002594';
+  const graphBoardRef = useRef<HTMLDivElement>(null);
+  const graphPanRef = useRef<GraphPanState | null>(null);
   const [ticker, setTicker] = useState(initialTicker);
   const [configs, setConfigs] = useState<WorkflowConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState('');
   const [workflowRunId, setWorkflowRunId] = useState('');
   const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
   const [trace, setTrace] = useState<WorkflowTrace | null>(null);
+  const [graphZoom, setGraphZoom] = useState(1);
+  const [isGraphPanning, setIsGraphPanning] = useState(false);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [connection, setConnection] = useState<ConnectionState>('idle');
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
@@ -64,9 +83,36 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
     }
   }, [routeTicker]);
 
+  useEffect(() => {
+    setGraphZoom(1);
+    graphPanRef.current = null;
+    setIsGraphPanning(false);
+  }, [workflowRunId]);
+
+  useEffect(() => {
+    const nextRunId = routeRunId?.trim();
+    if (!nextRunId || nextRunId === workflowRunId) {
+      return;
+    }
+
+    setWorkflowRunId(nextRunId);
+    setConnection('replaying');
+    setErrorMessage('');
+    setSnapshot(null);
+    setTrace(null);
+    setEvents([]);
+    setSelectedNode(null);
+
+    void loadWorkflowState(nextRunId, 'replace_events').catch((error) => {
+      setConnection('error');
+      setErrorMessage(formatApiError(error, '历史分析恢复失败'));
+    });
+  }, [routeRunId, workflowRunId]);
+
   useWorkflowStream(workflowRunId, {
     onReplaying: () => setConnection('replaying'),
     onOpen: () => setConnection('open'),
+    onClose: () => setConnection('closed'),
     onError: (message) => {
       setConnection('error');
       setErrorMessage(message);
@@ -93,6 +139,28 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
     () => new Set(isWorkflowFailed ? [] : (trace?.trace_nodes ?? []).map((node) => node.node_id)),
     [isWorkflowFailed, trace],
   );
+
+  useEffect(() => {
+    const board = graphBoardRef.current;
+    if (!board || !hasTraceNodes) {
+      return;
+    }
+
+    function handleNativeGraphWheel(event: WheelEvent) {
+      event.preventDefault();
+      const wheelDeltaY = normalizeWheelDeltaY(event);
+      if (wheelDeltaY === 0) {
+        return;
+      }
+
+      const sensitivity = event.ctrlKey || event.metaKey ? PINCH_ZOOM_SENSITIVITY : WHEEL_ZOOM_SENSITIVITY;
+      const zoomFactor = Math.exp(-wheelDeltaY * sensitivity);
+      zoomGraphAt(board, event.clientX, event.clientY, zoomFactor);
+    }
+
+    board.addEventListener('wheel', handleNativeGraphWheel, { passive: false });
+    return () => board.removeEventListener('wheel', handleNativeGraphWheel);
+  }, [hasTraceNodes]);
 
   const judgment = snapshot?.judgment ?? null;
   const failureSummary = useMemo(() => {
@@ -128,6 +196,7 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
         setErrorMessage(created.failure_message);
       }
       setWorkflowRunId(created.workflow_run_id);
+      syncAnalysisRoute(created.workflow_run_id, created.ticker || ticker);
       await loadWorkflowState(created.workflow_run_id, 'replace_events');
     } catch (error) {
       setConnection('error');
@@ -156,6 +225,7 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
     }
 
     setSnapshot(nextSnapshot);
+    setTicker(nextSnapshot.workflow_run.ticker);
     if (nextSnapshot.workflow_run.status === 'failed' || nextSnapshot.workflow_run.stage === 'failed') {
       setTrace(null);
       setSelectedNode(null);
@@ -257,6 +327,97 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
     setSelectedNode(baseNode as SelectedNode);
   }
 
+  function zoomGraphAt(board: HTMLDivElement, clientX: number, clientY: number, zoomFactor: number) {
+    const rect = board.getBoundingClientRect();
+    const pointerX = clientX - rect.left;
+    const pointerY = clientY - rect.top;
+
+    setGraphZoom((currentZoom) => {
+      const nextZoom = clampGraphZoom(currentZoom * zoomFactor);
+      if (nextZoom === currentZoom) {
+        return currentZoom;
+      }
+
+      const graphX = (board.scrollLeft + pointerX) / currentZoom;
+      const graphY = (board.scrollTop + pointerY) / currentZoom;
+      window.requestAnimationFrame(() => {
+        board.scrollLeft = graphX * nextZoom - pointerX;
+        board.scrollTop = graphY * nextZoom - pointerY;
+      });
+      return nextZoom;
+    });
+  }
+
+  function normalizeWheelDeltaY(event: WheelEvent): number {
+    return event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+  }
+
+  function handleGraphPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!hasTraceNodes || event.button !== 2) {
+      return;
+    }
+
+    const board = graphBoardRef.current;
+    if (!board) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    graphPanRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      scrollLeft: board.scrollLeft,
+      scrollTop: board.scrollTop,
+    };
+    setIsGraphPanning(true);
+  }
+
+  function handleGraphPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = graphPanRef.current;
+    const board = graphBoardRef.current;
+    if (!pan || !board || event.pointerId !== pan.pointerId) {
+      return;
+    }
+
+    if ((event.buttons & 2) === 0) {
+      finishGraphPan(event);
+      return;
+    }
+
+    event.preventDefault();
+    board.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
+    board.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
+  }
+
+  function handleGraphPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    finishGraphPan(event);
+  }
+
+  function handleGraphPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
+    finishGraphPan(event);
+  }
+
+  function handleGraphContextMenu(event: ReactPointerEvent<HTMLDivElement>) {
+    if (hasTraceNodes) {
+      event.preventDefault();
+    }
+  }
+
+  function finishGraphPan(event: ReactPointerEvent<HTMLDivElement>) {
+    const pan = graphPanRef.current;
+    if (!pan || event.pointerId !== pan.pointerId) {
+      return;
+    }
+
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    graphPanRef.current = null;
+    setIsGraphPanning(false);
+  }
+
   function handleStreamMessage(parsed: WorkflowEvent) {
     if (parsed.event_type === 'snapshot') {
       const payloadSnapshot = parsed.payload as unknown as WorkflowSnapshot;
@@ -265,9 +426,16 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
       }
     }
     if (
+      parsed.event_type === 'workflow_started' ||
+      parsed.event_type === 'connector_started' ||
+      parsed.event_type === 'connector_progress' ||
+      parsed.event_type === 'evidence_structuring_started' ||
+      parsed.event_type === 'evidence_structured' ||
       parsed.event_type === 'workflow_failed' ||
       parsed.event_type === 'agent_argument_completed' ||
       parsed.event_type === 'round_summary_completed' ||
+      parsed.event_type === 'judge_started' ||
+      parsed.event_type === 'judge_tool_call_completed' ||
       parsed.event_type === 'judgment_completed' ||
       parsed.event_type === 'workflow_completed'
     ) {
@@ -311,14 +479,39 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
           <strong>{snapshot?.workflow_run.ticker ?? (ticker || '未选择')}</strong>
         </header>
 
-        <div className="graph-board">
+        <div
+          className={`graph-board ${isGraphPanning ? 'panning' : ''}`}
+          ref={graphBoardRef}
+          onContextMenu={handleGraphContextMenu}
+          onPointerCancel={handleGraphPointerCancel}
+          onPointerDown={handleGraphPointerDown}
+          onPointerMove={handleGraphPointerMove}
+          onPointerUp={handleGraphPointerUp}
+        >
           {hasTraceNodes ? (
-            <TraceGraph
-              graph={graph}
-              traceNodeIds={traceNodeIds}
-              selectedNodeId={selectedNode?.node_id ?? null}
-              onSelectNode={handleSelectNode}
-            />
+            <div
+              className="graph-zoom-surface"
+              style={{
+                height: Math.ceil(graph.height * graphZoom),
+                width: Math.ceil(graph.width * graphZoom),
+              }}
+            >
+              <div
+                className="graph-zoom-content"
+                style={{
+                  height: graph.height,
+                  transform: `scale(${graphZoom})`,
+                  width: graph.width,
+                }}
+              >
+                <TraceGraph
+                  graph={graph}
+                  traceNodeIds={traceNodeIds}
+                  selectedNodeId={selectedNode?.node_id ?? null}
+                  onSelectNode={handleSelectNode}
+                />
+              </div>
+            </div>
           ) : (
             <TraceGraphEmptyState
               errorMessage={visibleFailureMessage}
@@ -350,7 +543,9 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
         <section className="inspector-panel">
           <h2>节点说明</h2>
           <div className="inspector-body">
-            {selectedNode ? (
+            {selectedNode?.node_type === 'judgment' && judgment ? (
+              <JudgmentInspector judgment={judgment} />
+            ) : selectedNode ? (
               <NodeInspector node={selectedNode} />
             ) : judgment ? (
               <JudgmentInspector judgment={judgment} />
@@ -380,6 +575,23 @@ function AnalysisPage({ routeTicker }: AnalysisPageProps) {
       </aside>
     </main>
   );
+}
+
+function clampGraphZoom(value: number): number {
+  return Math.min(MAX_GRAPH_ZOOM, Math.max(MIN_GRAPH_ZOOM, value));
+}
+
+function syncAnalysisRoute(workflowRunId: string, ticker: string): void {
+  const query = new URLSearchParams();
+  const normalizedTicker = ticker.trim();
+  if (normalizedTicker) {
+    query.set('ticker', normalizedTicker);
+  }
+  query.set('run', workflowRunId);
+  const nextHash = `#analysis?${query.toString()}`;
+  if (window.location.hash !== nextHash) {
+    window.history.replaceState(null, '', nextHash);
+  }
 }
 
 export default AnalysisPage;

@@ -232,7 +232,28 @@
 .graph-board {
   min-height: 0;
   border: 0;
+  cursor: default;
   overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.graph-board.panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.graph-zoom-surface {
+  position: relative;
+  display: block;
+}
+
+.graph-zoom-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  transform-origin: top left;
+  will-change: transform;
 }
 
 .trace-empty-state {

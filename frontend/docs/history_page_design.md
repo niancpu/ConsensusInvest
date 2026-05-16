@@ -10,7 +10,7 @@
 
 - 查看最近 20 条 workflow 的 `ticker / status / workflow_config_id`；
 - 点击某条记录看摘要详情（`Status / Config / Judgment / Signal`）；
-- 用「回到分析」按钮跳到 `#analysis?ticker=...`。
+- 用「回到分析」按钮跳到 `#analysis?ticker=...&run=...`，由分析页恢复快照和 Trace。
 
 不在历史页做：
 
@@ -64,7 +64,7 @@ getWorkflowRun(workflowRunId)  // GET /api/v1/workflow-runs/{id}
 
 - 标题 = `ticker`，副标题 = 完整 `workflow_run_id`；
 - `<dl>` 渲染 4 项：`Status / Config / Judgment / Signal`，`judgment_id` / `final_signal` 为空时显示 `-`；
-- 主按钮「回到分析」=> `#analysis?ticker={ticker}`，不带 `workflow_run_id`（受路由限制，见 `frontend_design.md` §3）。
+- 主按钮「回到分析」=> `#analysis?ticker={ticker}&run={workflow_run_id}`。
 
 ## 6. 边界与已知缺口
 
@@ -74,4 +74,4 @@ getWorkflowRun(workflowRunId)  // GET /api/v1/workflow-runs/{id}
   3. 处理只读态（不再订阅 SSE）。
 - 没有按 `status` 过滤；当前列表里既会出现 `completed`，也会出现 `running / failed`。
 - 默认按后端排序，前端没有重排。
-- 点击行后没有把 `workflow_run_id` 写到 URL，刷新页面会回到列表首项。
+- 点击行后没有把 `workflow_run_id` 写到历史页 URL；刷新历史页会回到列表首项，但从详情进入分析页后可通过 `run` 参数恢复完整分析状态。

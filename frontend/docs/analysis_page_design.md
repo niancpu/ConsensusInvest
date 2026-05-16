@@ -146,9 +146,10 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 
 按优先级渲染：
 
-1. `selectedNode` 存在 → `inspector/NodeInspector.tsx`；
-2. 否则 `judgment` 存在 → `inspector/JudgmentInspector.tsx`；
-3. 否则 `inspector/TraceInspectorEmptyState.tsx`。
+1. `selectedNode.node_type === 'judgment'` 且 `judgment` 存在 → `inspector/JudgmentInspector.tsx`；
+2. `selectedNode` 存在 → `inspector/NodeInspector.tsx`；
+3. 否则 `judgment` 存在 → `inspector/JudgmentInspector.tsx`；
+4. 否则 `inspector/TraceInspectorEmptyState.tsx`。
 
 ### 5.2 NodeInspector
 
@@ -170,7 +171,7 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 | `raw_item` | `getRawItem(rawRef)` | `GET /api/v1/raw-items/{raw_ref}` |
 | `agent_argument` | `getAgentArgument(id)` | `GET /api/v1/agent-arguments/{agent_argument_id}` |
 | `round_summary` | `getRoundSummary(id)` | `GET /api/v1/round-summaries/{round_summary_id}` |
-| `judgment` | — | 不另发请求；只用 trace 节点自带的 `title`/`summary` |
+| `judgment` | — | 不另发请求；使用 snapshot 里的 `judgment` 交给 `JudgmentInspector` 展示 |
 
 ### 5.3 JudgmentInspector
 

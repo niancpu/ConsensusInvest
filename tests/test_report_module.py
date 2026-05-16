@@ -268,6 +268,8 @@ def test_stock_report_views_create_report_run_records(tmp_path: Path) -> None:
     assert analysis_run.input_refs["evidence_ids"] == ["ev_000001"]
     assert analysis_run.output_snapshot["report_run_id"] == analysis.report_run_id
     assert analysis_run.output_snapshot["report"]["key_evidence"][0]["evidence_id"] == "ev_000001"
+    assert analysis_run.output_snapshot["report"]["key_evidence"][0]["publish_time"] == "2026-05-13T00:00:00+00:00"
+    assert analysis_run.output_snapshot["report"]["key_evidence"][0]["fetched_at"]
     assert analysis_cache.cache_key == analysis.report_run_id
     assert analysis_cache.report_run_id == analysis_run.report_run_id
     assert analysis_cache.input_refs == analysis_run.input_refs

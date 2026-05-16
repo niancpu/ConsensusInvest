@@ -166,6 +166,12 @@ EvidenceStore.query_references(envelope: InternalCallEnvelope, query: EvidenceRe
 }
 ```
 
+查询约束：
+
+- Workflow Orchestrator 选择主链路 Evidence 时必须传入当前 `workflow_run_id`；Evidence Store 只返回该 workflow 采集或显式关联的 Evidence。其他 workflow 的历史 Evidence 不能被新 workflow 自动选中。
+- 新 workflow 如果没有当前 run 关联 Evidence，应由 Orchestrator 进入 initial acquisition 或 EvidenceGap 补齐流程，而不是放宽 `workflow_run_id` 去读取历史 Evidence。
+- Report Module 构建报告视图时可以不传 `workflow_run_id`，读取已入库历史 Evidence；但输出必须携带 Evidence 时间字段，例如 `publish_time`、`fetched_at`，并保留 `report_run_id` / `updated_at` 作为本次视图生成时间。
+
 `EvidenceDetail` 应包含：
 
 ```json

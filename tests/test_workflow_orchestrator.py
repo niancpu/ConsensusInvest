@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
+from consensusinvest.agent_swarm.models import AgentArgumentDraft, RoundSummaryDraft
 from consensusinvest.evidence_store import FakeEvidenceStoreClient
 from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.search_agent import SearchAgentPool
@@ -115,7 +116,7 @@ def test_workflow_orchestrator_runs_swarm_judge_and_builds_trace() -> None:
     assert run.judgment_id is not None
     snapshot = service.snapshot(run.workflow_run_id)
     assert len(snapshot["evidence_items"]) == 2
-    assert len(snapshot["agent_arguments"]) == 3
+    assert len(snapshot["agent_arguments"]) == 6
     assert len(snapshot["round_summaries"]) == 3
     assert len(snapshot["judge_tool_calls"]) == 2
     assert {call.tool_name for call in snapshot["judge_tool_calls"]} == {"get_evidence_detail"}
@@ -141,20 +142,116 @@ def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> Non
         judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
     )
 
-    run = service.create_run(
+    queued = service.create_run(
         WorkflowRunCreate(
             ticker="002594",
             analysis_time=_analysis_time(),
             workflow_config_id="mvp_bull_judge_v1",
-            options=WorkflowOptions(auto_run=True),
+            options=WorkflowOptions(auto_run=False),
         )
     )
+    run = service.run_once(queued.workflow_run_id)
 
     assert run.status == "failed"
     assert run.failure_code == "insufficient_evidence"
     assert run.evidence_gaps
     events = service.list_events(run.workflow_run_id)
     assert [event.event_type for event in events][-1] == "workflow_failed"
+
+
+def test_workflow_orchestrator_does_not_select_evidence_from_other_workflow() -> None:
+    store = FakeEvidenceStoreClient()
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+    )
+    _seed_store("wr_old_evidence", store)
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+
+    assert service._select_evidence(queued) == []
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "failed"
+    assert run.failure_code == "insufficient_evidence"
+    assert service.snapshot(queued.workflow_run_id)["evidence_items"] == []
+
+
+def test_workflow_orchestrator_initial_acquisition_ignores_old_workflow_evidence() -> None:
+    store = FakeEvidenceStoreClient()
+    _seed_store("wr_old_evidence", store)
+    search_pool = SearchAgentPool(
+        providers={
+            "tavily": MockSearchProvider(
+                items_by_source={
+                    "tavily": (
+                        {
+                            "external_id": "new_run_news_001",
+                            "title": "BYD new run margin update",
+                            "url": "https://example.com/new-run/001",
+                            "content": "BYD margin update collected for this workflow.",
+                            "publish_time": "2026-05-12T12:00:00+00:00",
+                            "source_quality_hint": 0.82,
+                            "metadata": {"evidence_type": "company_news"},
+                        },
+                        {
+                            "external_id": "new_run_news_002",
+                            "title": "BYD new run cash flow update",
+                            "url": "https://example.com/new-run/002",
+                            "content": "BYD cash flow update collected for this workflow.",
+                            "publish_time": "2026-05-12T13:00:00+00:00",
+                            "source_quality_hint": 0.78,
+                            "metadata": {"evidence_type": "company_news"},
+                        },
+                    )
+                }
+            )
+        },
+        evidence_store=store,
+    )
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+    )
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "completed"
+    assert run.search_task_ids
+    snapshot = service.snapshot(queued.workflow_run_id)
+    assert [item.evidence_id for item in snapshot["evidence_items"]]
+    assert {item.title for item in snapshot["evidence_items"]} == {
+        "BYD new run cash flow update",
+        "BYD new run margin update",
+    }
+    events = [event.event_type for event in service.list_events(queued.workflow_run_id)]
+    assert "connector_started" in events
 
 
 def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> None:
@@ -196,6 +293,37 @@ def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> 
         acquisition=EvidenceAcquisitionService(search_pool=search_pool),
     )
 
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "completed"
+    assert run.search_task_ids
+    snapshot = service.snapshot(run.workflow_run_id)
+    assert len(snapshot["evidence_items"]) == 2
+    events = [event.event_type for event in service.list_events(run.workflow_run_id)]
+    assert "connector_started" in events
+    assert "agent_argument_completed" in events
+
+
+def test_workflow_orchestrator_auto_run_starts_in_background() -> None:
+    store = FakeEvidenceStoreClient()
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+    )
+
     run = service.create_run(
         WorkflowRunCreate(
             ticker="002594",
@@ -208,13 +336,75 @@ def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> 
         )
     )
 
-    assert run.status == "completed"
-    assert run.search_task_ids
-    snapshot = service.snapshot(run.workflow_run_id)
-    assert len(snapshot["evidence_items"]) == 2
-    events = [event.event_type for event in service.list_events(run.workflow_run_id)]
-    assert "connector_started" in events
-    assert "agent_argument_completed" in events
+    assert run.status == "queued"
+    assert run.stage == "queued"
+    assert service.get_run(run.workflow_run_id) is not None
+    assert service.list_events(run.workflow_run_id)[0].event_type == "workflow_queued"
+
+
+def test_workflow_orchestrator_trace_returns_running_partial_graph() -> None:
+    store = FakeEvidenceStoreClient()
+    repository = InMemoryWorkflowRepository()
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        repository=repository,
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+    )
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    evidence_ids = _seed_store(queued.workflow_run_id, store)
+    run = repository.update_run(queued.workflow_run_id, status="running", stage="debate")
+    agent_run = agent_swarm.repository.start_agent_run(
+        workflow_run_id=run.workflow_run_id,
+        agent_id="bull_v1",
+        role="bull",
+        started_at=_analysis_time(),
+    )
+    argument = agent_swarm.repository.save_argument(
+        workflow_run_id=run.workflow_run_id,
+        agent_run_id=agent_run.agent_run_id,
+        draft=AgentArgumentDraft(
+            agent_id="bull_v1",
+            role="bull",
+            round=1,
+            argument="Margin evidence supports an upside case.",
+            confidence=0.7,
+            referenced_evidence_ids=(evidence_ids[0],),
+        ),
+        created_at=_analysis_time(),
+    )
+    summary = agent_swarm.repository.save_round_summary(
+        RoundSummaryDraft(
+            workflow_run_id=run.workflow_run_id,
+            round=1,
+            summary="Bull case cites margin improvement.",
+            participants=("bull_v1",),
+            agent_argument_ids=(argument.agent_argument_id,),
+            referenced_evidence_ids=(evidence_ids[0],),
+        ),
+        created_at=_analysis_time(),
+    )
+
+    nodes, edges = service.trace(run.workflow_run_id)
+
+    assert any(node.node_type == "agent_argument" for node in nodes)
+    assert any(node.node_type == "round_summary" for node in nodes)
+    assert any(node.node_type == "evidence" for node in nodes)
+    assert any(node.node_type == "raw_item" for node in nodes)
+    assert not any(node.node_type == "judgment" for node in nodes)
+    assert any(edge.from_node_id == summary.round_summary_id for edge in edges)
+    assert any(edge.to_node_id == evidence_ids[0] for edge in edges)
 
 
 def test_workflow_orchestrator_fails_fast_when_requested_search_source_is_unconfigured() -> None:
@@ -287,8 +477,10 @@ def test_workflow_orchestrator_reports_missing_key_even_when_evidence_exists() -
     assert "agent_argument_completed" not in event_types
     assert "workflow_failed" == event_types[-1]
     nodes, edges = service.trace(run.workflow_run_id)
-    assert nodes == []
-    assert edges == []
+    assert any(node.node_type == "evidence" for node in nodes)
+    assert any(node.node_type == "raw_item" for node in nodes)
+    assert not any(node.node_type == "agent_argument" for node in nodes)
+    assert all(edge.edge_type == "derived_from" for edge in edges)
 
 
 def test_workflow_orchestrator_fails_fast_when_model_key_is_missing() -> None:

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import time
 
 from fastapi.testclient import TestClient
 
@@ -61,6 +62,19 @@ def _seed_workflow_evidence(workflow_run_id: str, store) -> None:
     )
 
 
+def _wait_for_workflow_status(client: TestClient, workflow_run_id: str, status: str) -> dict:
+    deadline = time.monotonic() + 5
+    last_data: dict | None = None
+    while time.monotonic() < deadline:
+        detail = client.get(f"/api/v1/workflow-runs/{workflow_run_id}")
+        assert detail.status_code == 200, detail.text
+        last_data = detail.json()["data"]
+        if last_data["status"] == status:
+            return last_data
+        time.sleep(0.05)
+    raise AssertionError(f"workflow {workflow_run_id} did not reach {status}: {last_data}")
+
+
 def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     client = TestClient(create_app())
     runtime = client.app.state.runtime
@@ -112,13 +126,12 @@ def test_workflow_api_create_detail_snapshot_trace_and_events() -> None:
     assert response.status_code == 202, response.text
     created = response.json()["data"]
     workflow_run_id = created["workflow_run_id"]
+    assert created["status"] == "queued"
     assert created["events_url"].endswith("/events")
     assert created["snapshot_url"].endswith("/snapshot")
 
-    detail = client.get(f"/api/v1/workflow-runs/{workflow_run_id}")
-    assert detail.status_code == 200, detail.text
-    assert detail.json()["data"]["workflow_run_id"] == workflow_run_id
-    assert detail.json()["data"]["status"] == "completed"
+    data = _wait_for_workflow_status(client, workflow_run_id, "completed")
+    assert data["workflow_run_id"] == workflow_run_id
 
     listing = client.get("/api/v1/workflow-runs", params={"ticker": "002594"})
     assert listing.status_code == 200, listing.text
@@ -276,3 +289,66 @@ def test_workflow_api_snapshot_projects_judge_tool_calls_and_events() -> None:
     event_types = [event["event_type"] for event in data["events"]]
     assert event_types.count("judge_tool_call_completed") == 2
     assert event_types.index("judge_tool_call_completed") < event_types.index("judgment_completed")
+
+
+def test_workflow_api_events_support_after_sequence_and_snapshot_replay() -> None:
+    client = TestClient(create_app())
+    runtime = client.app.state.runtime
+    service = runtime.workflow_service
+
+    run = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    service.repository.append_event(run.workflow_run_id, "workflow_started", {})
+
+    replay = client.get(
+        f"/api/v1/workflow-runs/{run.workflow_run_id}/events",
+        params={"after_sequence": 1},
+    )
+    assert replay.status_code == 200, replay.text
+    assert "event: workflow_queued" not in replay.text
+    assert "event: workflow_started" in replay.text
+
+    with_snapshot = client.get(
+        f"/api/v1/workflow-runs/{run.workflow_run_id}/events",
+        params={"include_snapshot": True},
+    )
+    assert with_snapshot.status_code == 200, with_snapshot.text
+    assert "event: snapshot" in with_snapshot.text
+    assert with_snapshot.text.index("event: snapshot") < with_snapshot.text.index("event: workflow_queued")
+
+
+def test_workflow_api_events_follow_closes_after_terminal_event() -> None:
+    client = TestClient(create_app())
+    runtime = client.app.state.runtime
+    service = runtime.workflow_service
+
+    run = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    service.repository.append_event(run.workflow_run_id, "workflow_completed", {})
+    service.repository.update_run(run.workflow_run_id, status="completed", stage="completed")
+
+    events = client.get(
+        f"/api/v1/workflow-runs/{run.workflow_run_id}/events",
+        params={"follow": True},
+    )
+
+    assert events.status_code == 200, events.text
+    assert "event: workflow_completed" in events.text

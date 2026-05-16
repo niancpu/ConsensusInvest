@@ -87,6 +87,8 @@ class KeyEvidence(TraceableModel):
     evidence_id: str
     title: str
     objective_summary: str
+    publish_time: str
+    fetched_at: str
     source_quality: float
     relevance: float
 
