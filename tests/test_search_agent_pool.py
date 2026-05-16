@@ -278,6 +278,32 @@ class SearchAgentPoolContractTests(unittest.TestCase):
         )
         self.assertEqual("search_same_key", _get_value(second_receipt, "idempotency_key"))
 
+    def test_submit_reuses_existing_task_when_idempotent_insert_races(self):
+        evidence_store = RecordingEvidenceStore()
+        provider = FakeProvider("tavily")
+        pool = self.make_pool([provider], evidence_store)
+        envelope = self.make_envelope(idempotency_key="search_race_key")
+        task = self.make_task(sources=["tavily"], idempotency_key="search_race_key")
+
+        first_receipt = pool.submit(envelope, task)
+        original_find = pool.repository.find_by_idempotency_key
+        calls = 0
+
+        def racing_find(idempotency_key):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            return original_find(idempotency_key)
+
+        pool.repository.find_by_idempotency_key = racing_find
+        second_receipt = pool.submit(envelope, deepcopy(task))
+
+        self.assertEqual(
+            _get_value(first_receipt, "task_id"),
+            _get_value(second_receipt, "task_id"),
+        )
+
     def test_all_sources_success_marks_task_completed_and_ingests_each_source(self):
         evidence_store = RecordingEvidenceStore()
         pool = self.make_pool(

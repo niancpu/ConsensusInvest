@@ -156,6 +156,21 @@ def test_market_index_intraday_refresh_runs_search_agent_and_reprojects_snapshot
     repo.close()
 
 
+def test_market_index_intraday_refresh_key_includes_index_code(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _empty_reader(repo)
+    reader.search_pool = FakeSearchPool(task_ids=("st_sh_001", "st_sz_001"))
+
+    build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
+    build_index_intraday(reader=reader, code="399001.SZ", refresh=RefreshPolicy.STALE)
+
+    keys = [envelope.idempotency_key for envelope, _ in reader.search_pool.calls]
+    assert keys[0] != keys[1]
+    assert keys[0].endswith("_index_intraday_missing_000001_SH")
+    assert keys[1].endswith("_index_intraday_missing_399001_SZ")
+    repo.close()
+
+
 def test_market_index_intraday_existing_failed_refresh_reports_failed(tmp_path: Path) -> None:
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     reader = _empty_reader(repo)
@@ -164,6 +179,19 @@ def test_market_index_intraday_existing_failed_refresh_reports_failed(tmp_path: 
     view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
 
     assert refresh_task_id == "st_failed_intraday"
+    assert view.data_state == "failed"
+    assert view.points == []
+    repo.close()
+
+
+def test_market_index_intraday_refresh_exception_reports_failed(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _empty_reader(repo)
+    reader.search_pool = FakeRaisingMarketSearchPool()
+
+    view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
+
+    assert refresh_task_id == "st_raising_intraday"
     assert view.data_state == "failed"
     assert view.points == []
     repo.close()
@@ -1007,3 +1035,24 @@ class FakeFailedMarketSearchPool:
 
     def run_task_once(self, task_id: str) -> bool:
         return False
+
+
+class FakeRaisingMarketSearchPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[InternalCallEnvelope, object]] = []
+        self.providers = {"akshare": object()}
+        self.repository = FakeSearchRepository()
+
+    def submit(self, envelope: InternalCallEnvelope, task: object) -> dict[str, object]:
+        self.calls.append((envelope, task))
+        self.repository.statuses["st_raising_intraday"] = SearchTaskStatus.FAILED
+        return {
+            "task_id": "st_raising_intraday",
+            "status": SearchTaskStatus.QUEUED,
+            "accepted_at": datetime.now(timezone.utc),
+            "idempotency_key": envelope.idempotency_key or "missing",
+            "poll_after_ms": 1000,
+        }
+
+    def run_task_once(self, task_id: str) -> bool:
+        raise RuntimeError("akshare intraday provider unavailable")

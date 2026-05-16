@@ -45,40 +45,48 @@ class SQLiteSearchTaskRepository:
 
         task_id = str(uuid.uuid4())
         now = _utc_now()
-        with self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO search_tasks (
-                    task_id, idempotency_key, status, task_json, created_at, updated_at
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO search_tasks (
+                        task_id, idempotency_key, status, task_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        task.idempotency_key,
+                        SearchTaskStatus.QUEUED.value,
+                        _to_json(task),
+                        now,
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
+                for source in task.scope.sources:
+                    self.upsert_source_status(
+                        task_id,
+                        source,
+                        SourceStatus.QUEUED,
+                        commit=False,
+                    )
+                self.append_event(
                     task_id,
-                    task.idempotency_key,
-                    SearchTaskStatus.QUEUED.value,
-                    _to_json(task),
-                    now,
-                    now,
-                ),
-            )
-            for source in task.scope.sources:
-                self.upsert_source_status(
-                    task_id,
-                    source,
-                    SourceStatus.QUEUED,
+                    "search.task_queued",
+                    {
+                        "task_id": task_id,
+                        "target": dataclass_to_dict(task.target),
+                        "sources": list(task.scope.sources),
+                    },
                     commit=False,
                 )
-            self.append_event(
-                task_id,
-                "search.task_queued",
-                {
-                    "task_id": task_id,
-                    "target": dataclass_to_dict(task.target),
-                    "sources": list(task.scope.sources),
-                },
-                commit=False,
-            )
+        except sqlite3.IntegrityError:
+            if not task.idempotency_key:
+                raise
+            existing = self.find_by_idempotency_key(task.idempotency_key)
+            if existing is None:
+                raise
+            return existing
         return task_id, SearchTaskStatus.QUEUED
 
     def find_by_idempotency_key(self, idempotency_key: str) -> tuple[str, SearchTaskStatus] | None:
