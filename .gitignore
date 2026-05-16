@@ -22,3 +22,5 @@ wheels/
 /CLAUDE.md
 start claude.bat
 start cx.bat
+
+*.sqlite3
