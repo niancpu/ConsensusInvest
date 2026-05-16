@@ -233,14 +233,26 @@
   min-height: 0;
   border: 0;
   cursor: grab;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
+  position: relative;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
 }
 
 .graph-board.panning {
+  cursor: grabbing;
+}
+
+body.analysis-graph-panning,
+body.analysis-graph-panning * {
+  cursor: grabbing;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.graph-board.panning .trace-node.interactive {
   cursor: grabbing;
 }
 
@@ -252,6 +264,9 @@
 .graph-zoom-surface {
   position: relative;
   display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
 .graph-zoom-content {

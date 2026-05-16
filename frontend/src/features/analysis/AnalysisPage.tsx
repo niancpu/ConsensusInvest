@@ -45,8 +45,14 @@ type GraphPanState = {
   pointerId: number;
   startX: number;
   startY: number;
-  scrollLeft: number;
-  scrollTop: number;
+  startOffsetX: number;
+  startOffsetY: number;
+};
+
+type GraphViewport = {
+  offsetX: number;
+  offsetY: number;
+  zoom: number;
 };
 
 const MIN_GRAPH_ZOOM = 0.45;
@@ -58,6 +64,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   const initialTicker = routeTicker ?? '002594';
   const graphBoardRef = useRef<HTMLDivElement>(null);
   const graphPanRef = useRef<GraphPanState | null>(null);
+  const graphViewportRef = useRef<GraphViewport>(createDefaultGraphViewport());
   const suppressGraphClickRef = useRef(false);
   const [ticker, setTicker] = useState(initialTicker);
   const [configs, setConfigs] = useState<WorkflowConfig[]>([]);
@@ -65,7 +72,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   const [workflowRunId, setWorkflowRunId] = useState('');
   const [snapshot, setSnapshot] = useState<WorkflowSnapshot | null>(null);
   const [trace, setTrace] = useState<WorkflowTrace | null>(null);
-  const [graphZoom, setGraphZoom] = useState(1);
+  const [graphViewport, setGraphViewport] = useState<GraphViewport>(() => createDefaultGraphViewport());
   const [isGraphPanning, setIsGraphPanning] = useState(false);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [connection, setConnection] = useState<ConnectionState>('idle');
@@ -91,7 +98,9 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   }, [routeTicker]);
 
   useEffect(() => {
-    setGraphZoom(1);
+    const nextViewport = createDefaultGraphViewport();
+    graphViewportRef.current = nextViewport;
+    setGraphViewport(nextViewport);
     graphPanRef.current = null;
     setIsGraphPanning(false);
   }, [workflowRunId]);
@@ -153,6 +162,22 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
       return;
     }
 
+    const rect = board.getBoundingClientRect();
+    const nextViewport = {
+      offsetX: Math.max(24, (rect.width - graph.width) / 2),
+      offsetY: 24,
+      zoom: 1,
+    };
+    graphViewportRef.current = nextViewport;
+    setGraphViewport(nextViewport);
+  }, [graph.height, graph.width, hasTraceNodes]);
+
+  useEffect(() => {
+    const board = graphBoardRef.current;
+    if (!board || !hasTraceNodes) {
+      return;
+    }
+
     function handleNativeGraphWheel(event: WheelEvent) {
       if (!isWheelEventInsideElement(event, board)) {
         return;
@@ -174,6 +199,41 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     window.addEventListener('wheel', handleNativeGraphWheel, options);
     return () => window.removeEventListener('wheel', handleNativeGraphWheel, options);
   }, [hasTraceNodes]);
+
+  useEffect(() => {
+    if (!isGraphPanning) {
+      return;
+    }
+
+    function handleWindowPointerMove(event: PointerEvent) {
+      continueGraphPan(event.pointerId, event.buttons, event.clientX, event.clientY, () => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+    }
+
+    function handleWindowPointerUp(event: PointerEvent) {
+      finishGraphPan(event.pointerId);
+    }
+
+    function handleWindowPointerCancel(event: PointerEvent) {
+      finishGraphPan(event.pointerId);
+    }
+
+    const moveOptions: AddEventListenerOptions = { capture: true, passive: false };
+    const endOptions: AddEventListenerOptions = { capture: true };
+    document.body.classList.add('analysis-graph-panning');
+    window.addEventListener('pointermove', handleWindowPointerMove, moveOptions);
+    window.addEventListener('pointerup', handleWindowPointerUp, endOptions);
+    window.addEventListener('pointercancel', handleWindowPointerCancel, endOptions);
+
+    return () => {
+      document.body.classList.remove('analysis-graph-panning');
+      window.removeEventListener('pointermove', handleWindowPointerMove, moveOptions);
+      window.removeEventListener('pointerup', handleWindowPointerUp, endOptions);
+      window.removeEventListener('pointercancel', handleWindowPointerCancel, endOptions);
+    };
+  }, [isGraphPanning]);
 
   const judgment = snapshot?.judgment ?? null;
   const failureSummary = useMemo(() => {
@@ -345,19 +405,21 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     const pointerX = clientX - rect.left;
     const pointerY = clientY - rect.top;
 
-    setGraphZoom((currentZoom) => {
-      const nextZoom = clampGraphZoom(currentZoom * zoomFactor);
-      if (nextZoom === currentZoom) {
-        return currentZoom;
+    setGraphViewport((currentViewport) => {
+      const nextZoom = clampGraphZoom(currentViewport.zoom * zoomFactor);
+      if (nextZoom === currentViewport.zoom) {
+        return currentViewport;
       }
 
-      const graphX = (board.scrollLeft + pointerX) / currentZoom;
-      const graphY = (board.scrollTop + pointerY) / currentZoom;
-      window.requestAnimationFrame(() => {
-        board.scrollLeft = graphX * nextZoom - pointerX;
-        board.scrollTop = graphY * nextZoom - pointerY;
-      });
-      return nextZoom;
+      const graphX = (pointerX - currentViewport.offsetX) / currentViewport.zoom;
+      const graphY = (pointerY - currentViewport.offsetY) / currentViewport.zoom;
+      const nextViewport = {
+        offsetX: pointerX - graphX * nextZoom,
+        offsetY: pointerY - graphY * nextZoom,
+        zoom: nextZoom,
+      };
+      graphViewportRef.current = nextViewport;
+      return nextViewport;
     });
   }
 
@@ -370,56 +432,60 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
       return;
     }
 
-    const board = graphBoardRef.current;
-    if (!board) {
-      return;
-    }
-
     if (event.button === 2) {
       event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
     }
-    event.currentTarget.setPointerCapture(event.pointerId);
+    const viewport = graphViewportRef.current;
     graphPanRef.current = {
       button: event.button,
       didDrag: false,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      scrollLeft: board.scrollLeft,
-      scrollTop: board.scrollTop,
+      startOffsetX: viewport.offsetX,
+      startOffsetY: viewport.offsetY,
     };
     setIsGraphPanning(true);
   }
 
-  function handleGraphPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+  function continueGraphPan(
+    pointerId: number,
+    buttons: number,
+    clientX: number,
+    clientY: number,
+    preventDefault: () => void,
+  ) {
     const pan = graphPanRef.current;
-    const board = graphBoardRef.current;
-    if (!pan || !board || event.pointerId !== pan.pointerId) {
+    if (!pan || pointerId !== pan.pointerId) {
       return;
     }
 
-    if ((event.buttons & pointerButtonMask(pan.button)) === 0) {
-      finishGraphPan(event);
+    if ((buttons & pointerButtonMask(pan.button)) === 0) {
+      finishGraphPan(pointerId);
       return;
     }
 
-    const deltaX = event.clientX - pan.startX;
-    const deltaY = event.clientY - pan.startY;
+    const deltaX = clientX - pan.startX;
+    const deltaY = clientY - pan.startY;
     if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
       pan.didDrag = true;
     }
 
-    event.preventDefault();
-    board.scrollLeft = pan.scrollLeft - deltaX;
-    board.scrollTop = pan.scrollTop - deltaY;
-  }
+    if (!pan.didDrag) {
+      return;
+    }
 
-  function handleGraphPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    finishGraphPan(event);
-  }
-
-  function handleGraphPointerCancel(event: ReactPointerEvent<HTMLDivElement>) {
-    finishGraphPan(event);
+    preventDefault();
+    setGraphViewport((currentViewport) => {
+      const nextViewport = {
+        ...currentViewport,
+        offsetX: pan.startOffsetX + deltaX,
+        offsetY: pan.startOffsetY + deltaY,
+      };
+      graphViewportRef.current = nextViewport;
+      return nextViewport;
+    });
   }
 
   function handleGraphContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
@@ -438,15 +504,13 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     event.stopPropagation();
   }
 
-  function finishGraphPan(event: ReactPointerEvent<HTMLDivElement>) {
+  function finishGraphPan(pointerId: number) {
     const pan = graphPanRef.current;
-    if (!pan || event.pointerId !== pan.pointerId) {
+    if (!pan || pointerId !== pan.pointerId) {
       return;
     }
 
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    releaseGraphPointerCapture(pointerId);
     suppressGraphClickRef.current = pan.button === 0 && pan.didDrag;
     if (suppressGraphClickRef.current) {
       window.setTimeout(() => {
@@ -455,6 +519,14 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     }
     graphPanRef.current = null;
     setIsGraphPanning(false);
+  }
+
+  function releaseGraphPointerCapture(pointerId: number) {
+    const board = graphBoardRef.current;
+    if (!board?.hasPointerCapture(pointerId)) {
+      return;
+    }
+    board.releasePointerCapture(pointerId);
   }
 
   function handleStreamMessage(parsed: WorkflowEvent) {
@@ -523,24 +595,15 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
           ref={graphBoardRef}
           onClickCapture={handleGraphClickCapture}
           onContextMenu={handleGraphContextMenu}
-          onPointerCancel={handleGraphPointerCancel}
           onPointerDown={handleGraphPointerDown}
-          onPointerMove={handleGraphPointerMove}
-          onPointerUp={handleGraphPointerUp}
         >
           {hasTraceNodes ? (
-            <div
-              className="graph-zoom-surface"
-              style={{
-                height: Math.ceil(graph.height * graphZoom),
-                width: Math.ceil(graph.width * graphZoom),
-              }}
-            >
+            <div className="graph-zoom-surface">
               <div
                 className="graph-zoom-content"
                 style={{
                   height: graph.height,
-                  transform: `scale(${graphZoom})`,
+                  transform: `translate(${graphViewport.offsetX}px, ${graphViewport.offsetY}px) scale(${graphViewport.zoom})`,
                   width: graph.width,
                 }}
               >
@@ -619,6 +682,14 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
 
 function clampGraphZoom(value: number): number {
   return Math.min(MAX_GRAPH_ZOOM, Math.max(MIN_GRAPH_ZOOM, value));
+}
+
+function createDefaultGraphViewport(): GraphViewport {
+  return {
+    offsetX: 0,
+    offsetY: 0,
+    zoom: 1,
+  };
 }
 
 function isWheelEventInsideElement(event: WheelEvent, element: HTMLElement): boolean {
