@@ -5,6 +5,7 @@ from consensusinvest.agent_swarm import (
     AgentSwarmRuntime,
     JudgeRuntime,
 )
+from consensusinvest.agent_swarm.models import SuggestedSearch
 from consensusinvest.evidence_store import FakeEvidenceStoreClient
 from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.search_agent.models import SearchResultPackage, SearchTarget
@@ -201,6 +202,11 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual("insufficient_evidence", outcome.status)
         self.assertEqual("missing_core_evidence", outcome.gaps[0].gap_type)
         self.assertIsNotNone(outcome.gaps[0].suggested_search)
+        assert outcome.gaps[0].suggested_search is not None
+        self.assertIsInstance(outcome.gaps[0].suggested_search, SuggestedSearch)
+        self.assertIn("002594", outcome.gaps[0].suggested_search.keywords)
+        self.assertNotIn("items", outcome.gaps[0].suggested_search.__dataclass_fields__)
+        self.assertNotIn("provider_response", outcome.gaps[0].suggested_search.__dataclass_fields__)
 
     def test_swarm_uses_llm_provider_and_filters_unowned_evidence_ids(self):
         store = self.make_store()
@@ -468,6 +474,40 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertIsNone(outcome.judgment_id)
         self.assertEqual("missing_round_summaries", outcome.gaps[0].gap_type)
         self.assertIn("rsum_missing_001", outcome.gaps[0].description)
+
+    def test_judge_returns_search_intent_gap_when_key_evidence_missing(self):
+        store = self.make_store()
+        envelope = self.make_envelope(idempotency_key="run_swarm_before_judge_gap")
+        swarm = AgentSwarmRuntime(evidence_store=store)
+        swarm_outcome = swarm.run(
+            envelope,
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": ["ev_000001", "ev_000002"]},
+            },
+        )
+        judge = JudgeRuntime(evidence_store=store, repository=swarm.repository)
+
+        outcome = judge.run(
+            self.make_envelope(idempotency_key="run_judge_missing_key_evidence"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "round_summary_ids": list(swarm_outcome.round_summary_ids),
+                "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                "key_evidence_ids": [],
+            },
+        )
+
+        self.assertEqual("insufficient_evidence", outcome.status)
+        self.assertEqual("missing_judge_inputs", outcome.gaps[0].gap_type)
+        self.assertIsNotNone(outcome.gaps[0].suggested_search)
+        assert outcome.gaps[0].suggested_search is not None
+        self.assertIsInstance(outcome.gaps[0].suggested_search, SuggestedSearch)
+        self.assertNotIn("items", outcome.gaps[0].suggested_search.__dataclass_fields__)
+        self.assertNotIn("provider_response", outcome.gaps[0].suggested_search.__dataclass_fields__)
 
 
 if __name__ == "__main__":

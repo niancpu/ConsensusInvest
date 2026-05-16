@@ -27,6 +27,7 @@ from .models import (
     AgentSwarmHistory,
     AgentSwarmInput,
     AgentSwarmRunOutcome,
+    AgentSwarmToolAccess,
     EvidenceGap,
     EvidenceSelection,
     JudgeInput,
@@ -141,7 +142,7 @@ class AgentSwarmRuntime:
                 EvidenceGap(
                     gap_type="missing_evidence_ids",
                     description=f"Evidence Store 中缺少请求的 Evidence: {', '.join(missing_ids)}。",
-                    suggested_search=_suggested_search(swarm_input),
+                    suggested_search=_agent_swarm_suggested_search(swarm_input),
                 ),
             )
             _append_runtime_event(
@@ -452,6 +453,9 @@ def _build_llm_argument_draft(
             "round": round_number,
             "total_rounds": total_rounds,
         },
+        "tool_access": {
+            "request_search": swarm_input.tool_access.request_search,
+        },
         "agent": {
             "agent_id": agent_config.agent_id,
             "role": agent_config.role,
@@ -713,6 +717,8 @@ def _build_judgment_record(
                 "reasoning、risk_notes、suggested_next_checks、limitations 必须使用简体中文。",
                 "不要输出英文段落；英文只能出现在证据 ID、论证 ID、字段名、ticker 或专有名词中。",
                 "最终判断必须可由已给智能体论证和证据 ID 回查。",
+                "不得直接调用外部 provider；不得消费未入库搜索结果。",
+                "如果 request_search 允许且证据不足，只能通过 EvidenceGap/suggested_search 请求补证据。",
             ],
             "output_schema": {
                 "final_signal": "bullish|bearish|neutral|insufficient_evidence",
@@ -727,6 +733,12 @@ def _build_judgment_record(
                 "limitations": ["只允许简体中文自然语言 string"],
             },
             "workflow_run_id": judge_input.workflow_run_id,
+            "tool_access": {
+                "get_evidence_detail": judge_input.tool_access.get_evidence_detail,
+                "get_raw_item": judge_input.tool_access.get_raw_item,
+                "query_evidence_references": judge_input.tool_access.query_evidence_references,
+                "request_search": judge_input.tool_access.request_search,
+            },
             "round_summary_ids": list(summary_ids),
             "allowed_evidence_ids": list(allowed_evidence_ids),
             "allowed_agent_argument_ids": list(argument_ids),
@@ -846,6 +858,7 @@ class JudgeRuntime:
                 EvidenceGap(
                     gap_type="missing_judge_inputs",
                     description="Judge 缺少 Round Summary、Agent Argument 或 key Evidence，不能形成完整判断。",
+                    suggested_search=_judge_suggested_search(judge_input),
                 ),
             )
             _append_runtime_event(
@@ -890,6 +903,7 @@ class JudgeRuntime:
                         "Judge 请求的 Round Summary 尚未保存："
                         f"{', '.join(missing_summary_ids)}。"
                     ),
+                    suggested_search=_judge_suggested_search(judge_input),
                 ),
             )
             _append_runtime_event(
@@ -926,6 +940,7 @@ class JudgeRuntime:
                 EvidenceGap(
                     gap_type="missing_agent_arguments",
                     description="Judge 请求的 Agent Argument 尚未保存。",
+                    suggested_search=_judge_suggested_search(judge_input),
                 ),
             )
             _append_runtime_event(
@@ -961,6 +976,7 @@ class JudgeRuntime:
                     EvidenceGap(
                         gap_type="missing_evidence_ids",
                         description=f"Judge 请求的 Evidence 不存在：{evidence_id}。",
+                        suggested_search=_judge_suggested_search(judge_input),
                     ),
                 )
                 _append_runtime_event(
@@ -1149,6 +1165,8 @@ def _enabled_judge_tools(tool_access: JudgeToolAccess) -> list[str]:
         tools.append("get_raw_item")
     if tool_access.query_evidence_references:
         tools.append("query_evidence_references")
+    if tool_access.request_search:
+        tools.append("request_search")
     return tools
 
 
@@ -1172,16 +1190,28 @@ def _default_gap(swarm_input: AgentSwarmInput) -> EvidenceGap:
     return EvidenceGap(
         gap_type="missing_core_evidence",
         description="缺少可供 Agent Swarm 论证的已入库 Evidence。",
-        suggested_search=_suggested_search(swarm_input),
+        suggested_search=_agent_swarm_suggested_search(swarm_input),
     )
 
 
-def _suggested_search(swarm_input: AgentSwarmInput) -> SuggestedSearch:
+def _agent_swarm_suggested_search(swarm_input: AgentSwarmInput) -> SuggestedSearch | None:
+    if not swarm_input.tool_access.request_search:
+        return None
     return SuggestedSearch(
         target_entity_ids=(swarm_input.entity_id,) if swarm_input.entity_id else (),
         evidence_types=("financial_report", "company_news", "industry_news"),
         lookback_days=365,
         keywords=(swarm_input.ticker, "基本面", "现金流", "同业 对比"),
+    )
+
+
+def _judge_suggested_search(judge_input: JudgeInput) -> SuggestedSearch | None:
+    if not judge_input.tool_access.request_search:
+        return None
+    return SuggestedSearch(
+        evidence_types=("financial_report", "company_news", "industry_news"),
+        lookback_days=365,
+        keywords=("补充关键证据", judge_input.workflow_run_id),
     )
 
 
@@ -1339,8 +1369,10 @@ def _coerce_agent_swarm_input(value: AgentSwarmInput | Mapping[str, Any]) -> Age
     data = dict(value)
     selection = data.get("evidence_selection") or {}
     history = data.get("history") or {}
+    tool_access = data.get("tool_access") or {}
     data["evidence_selection"] = _coerce_dataclass(EvidenceSelection, selection)
     data["history"] = _coerce_dataclass(AgentSwarmHistory, history)
+    data["tool_access"] = _coerce_dataclass(AgentSwarmToolAccess, tool_access)
     return _coerce_dataclass(AgentSwarmInput, data)
 
 
@@ -1366,7 +1398,8 @@ def _coerce_dataclass(cls: type[_T], value: Any) -> _T:
 _AGENT_ARGUMENT_SYSTEM_PROMPT = """你是面向中文用户的投资研究辩论 Agent。
 必须使用简体中文撰写 argument、limitations 和 role_output 中的自然语言内容。
 只返回一个 JSON 对象，不要输出 markdown。
-只能使用输入中提供的证据 ID；不得编造证据、事实、URL、搜索任务或外部 provider 调用。
+只能使用输入中提供的证据 ID；不得编造证据、事实或 URL。
+不得直接调用外部 provider；不得消费未入库搜索结果。
 可以做分析性论证，但每个重要判断都必须引用已提供的证据 ID。
 不得在面向证据链的字段中输出买入、卖出、持有等交易指令。"""
 
@@ -1381,5 +1414,6 @@ _JUDGE_SYSTEM_PROMPT = """你是面向中文用户的、证据驱动投研工作
 必须使用简体中文撰写 reasoning、risk_notes、suggested_next_checks 和 limitations。
 只返回一个 JSON 对象，不要输出 markdown。
 只能使用已提供的智能体论证和证据 ID。
-不得调用搜索，不得编造证据，不得加入无依据事实。
+不得直接调用外部 provider；只能输出受控 EvidenceGap/suggested_search 请求，不能消费未入库搜索结果。
+不得编造证据，不得加入无依据事实。
 最终判断可以给出有边界的 final_signal、confidence、风险、限制条件和后续核对项。"""

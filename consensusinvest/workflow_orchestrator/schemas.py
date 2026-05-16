@@ -14,7 +14,7 @@ class WorkflowModel(BaseModel):
 
 class WorkflowQueryRequest(WorkflowModel):
     lookback_days: int = 30
-    sources: list[str] = Field(default_factory=lambda: ["akshare", "tavily", "exa"])
+    sources: list[str] = Field(default_factory=lambda: ["tavily", "exa", "akshare"])
     evidence_types: list[str] = Field(default_factory=lambda: ["financial_report", "company_news", "industry_news"])
     max_results: int = 50
 

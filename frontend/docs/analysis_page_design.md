@@ -197,7 +197,7 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
    - `ticker / stock_code`（同值，临时双发，等后端协议确认后取其一）；
    - `analysis_time`：默认 `new Date().toISOString()`；
    - `workflow_config_id`；
-   - `query`：`lookback_days=30`、`sources=[akshare,tavily,exa]`、`evidence_types=[financial_report,company_news,industry_news]`、`max_results=50`；
+   - `query`：`lookback_days=30`、`sources=[tavily,exa,akshare]`、`evidence_types=[financial_report,company_news,industry_news]`、`max_results=50`；
    - `options`：`stream=true, include_raw_payload=false, auto_run=true`。
 4. 创建成功 → `setWorkflowRunId(created.workflow_run_id)` → `loadWorkflowState(runId, 'replace_events')`；
 5. 失败 → `connection='error'`，错误消息走 `formatApiError`。

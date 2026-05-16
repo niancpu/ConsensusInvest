@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
-from consensusinvest.agent_swarm.models import AgentArgumentDraft, RoundSummaryDraft
+from consensusinvest.agent_swarm.models import (
+    AgentArgumentDraft,
+    AgentSwarmRunOutcome,
+    EvidenceGap,
+    RoundSummaryDraft,
+    SuggestedSearch,
+)
 from consensusinvest.evidence_store import FakeEvidenceStoreClient
 from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.search_agent import SearchAgentPool
@@ -32,6 +38,35 @@ class FakeLLMProvider:
 
     def complete_json(self, **kwargs):
         raise AssertionError("preflight should stop before model calls")
+
+
+class GapThenCompletedSwarm:
+    def __init__(self, *, evidence_store: FakeEvidenceStoreClient) -> None:
+        self.delegate = AgentSwarmRuntime(evidence_store=evidence_store)
+        self.repository = self.delegate.repository
+        self.calls = 0
+
+    def run(self, envelope, payload):
+        self.calls += 1
+        if self.calls == 1:
+            return AgentSwarmRunOutcome(
+                task_id="agent_swarm_gap_001",
+                status="insufficient_evidence",
+                accepted_at=_analysis_time(),
+                gaps=(
+                    EvidenceGap(
+                        gap_type="missing_cash_flow_check",
+                        description="Debate needs a controlled search request for cash-flow corroboration.",
+                        suggested_search=SuggestedSearch(
+                            target_entity_ids=("ent_company_002594",),
+                            evidence_types=("company_news",),
+                            lookback_days=30,
+                            keywords=("002594", "cash flow corroboration"),
+                        ),
+                    ),
+                ),
+            )
+        return self.delegate.run(envelope, payload)
 
 
 def _analysis_time() -> datetime:
@@ -157,6 +192,60 @@ def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> Non
     assert run.evidence_gaps
     events = service.list_events(run.workflow_run_id)
     assert [event.event_type for event in events][-1] == "workflow_failed"
+
+
+def test_workflow_orchestrator_fills_debate_search_intent_and_continues() -> None:
+    store = FakeEvidenceStoreClient()
+    provider = MockSearchProvider(
+        items_by_source={
+            "tavily": (
+                {
+                    "external_id": "gap_fill_cash_flow_001",
+                    "title": "BYD cash flow corroboration",
+                    "url": "https://example.com/gap-fill/cash-flow",
+                    "content": "BYD cash flow corroboration collected through controlled search.",
+                    "publish_time": "2026-05-12T14:00:00+00:00",
+                    "source_quality_hint": 0.83,
+                    "metadata": {"evidence_type": "company_news"},
+                },
+            )
+        }
+    )
+    search_pool = SearchAgentPool(providers={"tavily": provider}, evidence_store=store)
+    agent_swarm = GapThenCompletedSwarm(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+    )
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    _seed_store(queued.workflow_run_id, store)
+
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "completed"
+    assert run.failure_code is None
+    assert run.search_task_ids
+    assert agent_swarm.calls == 2
+    assert provider.calls == [("search", "tavily")]
+    snapshot = service.snapshot(run.workflow_run_id)
+    assert len(snapshot["evidence_items"]) == 3
+    assert snapshot["judgment"] is not None
+    events = [event.event_type for event in service.list_events(run.workflow_run_id)]
+    assert "workflow_failed" not in events
+    assert events.index("connector_progress") < events.index("agent_argument_completed")
 
 
 def test_workflow_orchestrator_does_not_select_evidence_from_other_workflow() -> None:

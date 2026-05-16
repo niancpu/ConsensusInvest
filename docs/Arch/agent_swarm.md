@@ -37,11 +37,13 @@ Agent 输出包括：
 设计边界：
 
 - Agent Swarm 不直接调用 Search Agent。
-- Agent Swarm 可以附带 `suggested_search`，但它只是搜索建议，不是 `SearchTask`。
-- Orchestrator 通过 `EvidenceAcquisitionService` 把可执行的 `EvidenceGap` 转换为 SearchTask 并触发补齐；只有 Research/Search Agent 明确无法补齐时，才进入信息不足报告。
+- Agent Swarm 可以暴露受控 `request_search` / `search_intent` 能力，但输出只能落到 `EvidenceGap.suggested_search`。
+- `suggested_search` 只是搜索意图，不是 `SearchTask`，也不是 provider 调用参数。
+- Orchestrator 通过 `EvidenceAcquisitionService` 把可执行的 `EvidenceGap` 转换为 SearchTask 并触发补齐；补齐结果必须先写入 Evidence Store，再重新选择 Evidence 并继续 workflow。
+- 只有 source allowlist、预算、重试上限或 Search Agent 执行结果明确无法补齐时，才进入信息不足报告。
 - 这样可以避免推理 Agent 自行扩张数据边界。
 
-`suggested_search` 只能描述缺什么、建议查什么，不能指定 provider 私有调用参数、不能绕过 workflow 预算，也不能要求当前 Agent 同步等待搜索完成。
+`suggested_search` 只能描述缺什么、建议查什么，不能指定 provider 私有调用参数、不能绕过 workflow 预算，也不能要求当前 Agent 直接消费未入库搜索结果。SearchResult / Raw / Evidence 的入库、去重、质量标记和 workflow 归属由 SearchAgentPool 与 Evidence Store 完成。
 
 ## 4. Debate Runtime
 
@@ -65,7 +67,14 @@ Judge 默认消费：
 - Evidence Structure；
 - 必要时通过工具回查 Raw。
 
-Judge 可以输出后续核对建议或 EvidenceGap，但不能直接调用 Search Agent，也不能把未入库搜索结果纳入 Judgment。
+Judge 可以输出后续核对建议或 EvidenceGap，也可以通过受控 `request_search` / `search_intent` 表达需要补证据的意图。但 Judge 不能直接调用 Search Agent、不能选择 provider、不能把未入库搜索结果纳入 Judgment。
+
+当 Judge 返回带 `suggested_search` 的 EvidenceGap 时，控制权仍在 Orchestrator：
+
+- Orchestrator 校验 source allowlist、预算、重试次数和 workflow 状态。
+- `EvidenceAcquisitionService` 生成正式 SearchTask。
+- `SearchAgentPool` 执行搜索并将 SearchResult 入 Evidence Store。
+- Orchestrator 重新选择入库 Evidence 后继续 Judge 或回到必要的 Debate 阶段。
 
 Judge 输出 `judgment`，并保存：
 

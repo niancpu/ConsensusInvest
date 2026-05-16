@@ -464,6 +464,36 @@ class SearchAgentPoolContractTests(unittest.TestCase):
         self.assertEqual(["tavily_001", "tavily_002"], [_get_value(item, "external_id") for item in package_items])
         self.assertEqual(2, _get_value(self.source_row(status, "tavily"), "found_count"))
 
+    def test_max_results_preserves_later_source_execution(self):
+        tavily_items = [
+            {
+                "external_id": f"tavily_{index:03d}",
+                "title": f"tavily result {index}",
+                "url": f"https://example.com/tavily/{index:03d}",
+                "content": f"provider content {index}",
+                "content_preview": f"provider preview {index}",
+                "publish_time": "2026-05-12T10:00:00+08:00",
+                "fetched_at": "2026-05-13T10:00:00+08:00",
+                "language": "zh-CN",
+                "raw_payload": {"provider_response": {"source": "tavily", "index": index}},
+            }
+            for index in range(1, 10)
+        ]
+        evidence_store = RecordingEvidenceStore()
+        tavily = FakeProvider("tavily", items=tavily_items)
+        akshare = FakeProvider("akshare")
+        pool = self.make_pool([tavily, akshare], evidence_store)
+        envelope = self.make_envelope()
+        task = self.make_task(sources=["tavily", "akshare"], max_results=4)
+
+        _, status = self.submit_and_run(pool, envelope, task)
+
+        self.assert_task_status(status, "completed")
+        self.assertEqual(2, len(evidence_store.ingest_calls))
+        self.assertEqual(["tavily", "akshare"], [_get_value(package, "source") for _, package in evidence_store.ingest_calls])
+        self.assertEqual(2, _get_value(self.source_row(status, "tavily"), "found_count"))
+        self.assertEqual(1, _get_value(self.source_row(status, "akshare"), "found_count"))
+
     def test_submit_rejects_callback_ingest_target_outside_evidence_store(self):
         evidence_store = RecordingEvidenceStore()
         provider = FakeProvider("tavily")

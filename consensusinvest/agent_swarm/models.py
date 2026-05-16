@@ -25,6 +25,11 @@ class AgentSwarmHistory:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentSwarmToolAccess:
+    request_search: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class AgentSwarmInput:
     workflow_run_id: str
     ticker: str
@@ -32,6 +37,7 @@ class AgentSwarmInput:
     workflow_config_id: str
     evidence_selection: EvidenceSelection
     history: AgentSwarmHistory = field(default_factory=AgentSwarmHistory)
+    tool_access: AgentSwarmToolAccess = field(default_factory=AgentSwarmToolAccess)
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +159,7 @@ class JudgeToolAccess:
     get_evidence_detail: bool = True
     get_raw_item: bool = True
     query_evidence_references: bool = True
+    request_search: bool = True
 
 
 @dataclass(frozen=True, slots=True)
