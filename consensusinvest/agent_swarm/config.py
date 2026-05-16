@@ -37,11 +37,11 @@ MVP_BULL_JUDGE_CONFIG = DebateWorkflowConfig(
         DebateAgentConfig(
             agent_id="bull_v1",
             role="bullish_interpreter",
-            stance_label="multi-round bullish review",
-            thesis_label="fundamental improvement thesis",
+            stance_label="多轮偏多复核",
+            thesis_label="基本面改善假设",
             stance_output_key="stance_interpretation",
             impact_output_key="bullish_impact_assessment",
-            limitation="Missing full peer comparison and valuation sensitivity.",
+            limitation="缺少完整同业对比和估值敏感性验证。",
         ),
     ),
 )
@@ -61,4 +61,3 @@ def get_debate_workflow_config(
         return available[workflow_config_id]
     except KeyError as exc:
         raise ValueError(f"unknown workflow_config_id: {workflow_config_id}") from exc
-

@@ -11,6 +11,7 @@ from consensusinvest.common.errors import NotFoundError
 from consensusinvest.common.response import ListPagination, ListResponse, SingleResponse
 from consensusinvest.evidence_store.client import EvidenceStoreClient
 from consensusinvest.evidence_store.models import EvidenceQuery, EvidenceReferenceQuery
+from consensusinvest.evidence_store.presentation import display_text_for_raw_payload
 from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.runtime.wiring import AppRuntime
 
@@ -241,6 +242,17 @@ def _evidence_list_view(
     workflow_run_id: str | None = None,
 ) -> EvidenceListItemView:
     structure = detail.structure if detail is not None else None
+    raw = _raw_or_none(evidence_store, item.raw_ref)
+    source_label = _source_label(raw, item.source)
+    objective_summary = (
+        display_text_for_raw_payload(
+            structure.objective_summary if structure else None,
+            raw.raw_payload if raw else None,
+            source_label=source_label,
+        )
+        if structure
+        else None
+    )
     return EvidenceListItemView(
         evidence_id=item.evidence_id,
         workflow_run_id=workflow_run_id or _evidence_workflow_run_id(evidence_store, item),
@@ -249,7 +261,7 @@ def _evidence_list_view(
         source_type=item.source_type,
         evidence_type=item.evidence_type,
         title=item.title,
-        objective_summary=structure.objective_summary if structure else None,
+        objective_summary=objective_summary,
         publish_time=_dt(item.publish_time),
         fetched_at=_dt(item.fetched_at),
         source_quality=item.source_quality,
@@ -264,6 +276,22 @@ def _evidence_list_view(
 def _evidence_detail_view(evidence_store: EvidenceStoreClient, detail: EvidenceDetail) -> EvidenceDetailView:
     item = detail.evidence
     structure = detail.structure
+    raw = _raw_or_none(evidence_store, detail.raw_ref)
+    source_label = _source_label(raw, item.source)
+    content = display_text_for_raw_payload(
+        item.content,
+        raw.raw_payload if raw else None,
+        source_label=source_label,
+    )
+    objective_summary = (
+        display_text_for_raw_payload(
+            structure.objective_summary,
+            raw.raw_payload if raw else None,
+            source_label=source_label,
+        )
+        if structure
+        else None
+    )
     return EvidenceDetailView(
         evidence_id=item.evidence_id,
         workflow_run_id=_evidence_workflow_run_id(evidence_store, item),
@@ -272,13 +300,13 @@ def _evidence_detail_view(evidence_store: EvidenceStoreClient, detail: EvidenceD
         source_type=item.source_type,
         evidence_type=item.evidence_type,
         title=item.title,
-        content=item.content,
+        content=content,
         url=item.url,
         publish_time=_dt(item.publish_time),
         fetched_at=_dt(item.fetched_at),
         entities=list(item.entity_ids),
         tags=[item.evidence_type] if item.evidence_type else [],
-        objective_summary=structure.objective_summary if structure else None,
+        objective_summary=objective_summary,
         key_facts=list(structure.key_facts) if structure else [],
         claims=list(structure.claims) if structure else [],
         source_quality=item.source_quality,
@@ -335,6 +363,23 @@ def _reference_response(rows: list[EvidenceReference]) -> ListResponse[EvidenceR
 def _derived_evidence_ids(evidence_store: EvidenceStoreClient, raw_ref: str) -> list[str]:
     page = evidence_store.query_evidence(_query_envelope(), EvidenceQuery(limit=1000))
     return [item.evidence_id for item in page.items if item.raw_ref == raw_ref]
+
+
+def _raw_or_none(evidence_store: EvidenceStoreClient, raw_ref: str) -> RawItem | None:
+    try:
+        return evidence_store.get_raw(_query_envelope(), raw_ref)
+    except KeyError:
+        return None
+
+
+def _source_label(raw: RawItem | None, fallback: str | None) -> str | None:
+    source = (raw.source if raw is not None else fallback) or ""
+    normalized = source.strip().lower()
+    if normalized == "akshare":
+        return "AkShare"
+    if normalized == "tushare":
+        return "TuShare"
+    return source or fallback
 
 
 def _payload_preview(payload: dict[str, Any]) -> dict[str, Any]:

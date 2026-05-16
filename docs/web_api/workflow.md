@@ -55,6 +55,7 @@ Content-Type: application/json
 - 前端拿到 `workflow_run_id` 后应立即订阅 `events_url`，同时可以定时或断线后调用 `snapshot_url`。
 - `analysis_time` 是分析基准时间。回测时不得用当前时间替代。
 - `include_raw_payload=false` 只影响创建后的默认快照体积，不影响后续通过 Raw Item 接口下钻。
+- 创建任务时，后端会把 `ticker` / `stock_code` / `entity_id` 登记为最小 Company Entity；若 `stock_code` 只传 6 位 A 股代码，后端按代码前缀规范化为 `.SH` 或 `.SZ`。这保证后续 Report Module 可以按 `/api/v1/stocks/{stock_code}/...` 查到同一标的，但不代表已补齐公司简称、行业关系等实体资料。
 
 ### 4.2 查询任务列表
 

@@ -10,7 +10,14 @@ from uuid import uuid4
 
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
 from consensusinvest.agent_swarm.models import EvidenceGap, EvidenceSelection, JudgeToolAccess, SuggestedSearch
+from consensusinvest.agent_swarm.presentation import (
+    display_agent_argument_text,
+    display_judgment_reasoning,
+    display_round_summary_text,
+)
+from consensusinvest.entities import EntityRecord
 from consensusinvest.evidence_store import EvidenceQuery, EvidenceStoreClient
+from consensusinvest.evidence_store.presentation import display_text_for_raw_payload
 from consensusinvest.evidence_structuring import EvidenceStructuringAgent
 from consensusinvest.runtime import InternalCallEnvelope
 
@@ -36,11 +43,13 @@ class WorkflowOrchestrator:
         judge: JudgeRuntime,
         acquisition: EvidenceAcquisitionService | None = None,
         evidence_structurer: EvidenceStructuringAgent | None = None,
+        entity_repository: Any | None = None,
     ) -> None:
         self.repository = repository or InMemoryWorkflowRepository()
         self.evidence_store = evidence_store
         self.agent_swarm = agent_swarm
         self.judge = judge
+        self.entity_repository = entity_repository
         self.acquisition = acquisition or EvidenceAcquisitionService()
         self.evidence_structurer = evidence_structurer or EvidenceStructuringAgent(
             evidence_store=evidence_store
@@ -48,29 +57,33 @@ class WorkflowOrchestrator:
 
     def create_run(self, request: WorkflowRunCreate) -> WorkflowRunRecord:
         now = _timestamp(request.analysis_time)
+        ticker = _normalize_ticker(request.ticker)
+        stock_code = _normalize_stock_code(request.stock_code, ticker=ticker)
+        entity_id = request.entity_id or f"ent_company_{ticker}"
         workflow_run_id = self.repository.new_workflow_run_id(
-            ticker=request.ticker,
+            ticker=ticker,
             analysis_time=request.analysis_time,
         )
         run = WorkflowRunRecord(
             workflow_run_id=workflow_run_id,
             correlation_id=f"corr_{uuid4().hex[:12]}",
-            ticker=request.ticker,
+            ticker=ticker,
             analysis_time=request.analysis_time,
             workflow_config_id=request.workflow_config_id,
             status="queued",
             stage="queued",
             query=request.query,
             options=request.options,
-            entity_id=request.entity_id or f"ent_company_{request.ticker}",
-            stock_code=request.stock_code,
+            entity_id=entity_id,
+            stock_code=stock_code,
             created_at=now,
         )
+        self._upsert_workflow_entity(run)
         self.repository.create_run(run)
         self.repository.append_event(
             workflow_run_id,
             "workflow_queued",
-            {"ticker": request.ticker, "workflow_config_id": request.workflow_config_id},
+            {"ticker": ticker, "workflow_config_id": request.workflow_config_id},
             created_at=now,
         )
         if request.options.auto_run:
@@ -284,8 +297,15 @@ class WorkflowOrchestrator:
                 WorkflowTraceNode(
                     node_type="judgment",
                     node_id=judgment.judgment_id,
-                    title="Final judgment",
-                    summary=judgment.reasoning,
+                    title="最终判断",
+                    summary=display_judgment_reasoning(
+                        reasoning=judgment.reasoning,
+                        final_signal=judgment.final_signal,
+                        confidence=judgment.confidence,
+                        positive_evidence_ids=judgment.key_positive_evidence_ids,
+                        negative_evidence_ids=judgment.key_negative_evidence_ids,
+                        referenced_agent_argument_ids=judgment.referenced_agent_argument_ids,
+                    ),
                 )
             )
         for argument in self.agent_swarm.repository.list_arguments(workflow_run_id):
@@ -293,8 +313,16 @@ class WorkflowOrchestrator:
                 WorkflowTraceNode(
                     node_type="agent_argument",
                     node_id=argument.agent_argument_id,
-                    title=f"{argument.agent_id} round {argument.round}",
-                    summary=argument.argument,
+                    title=f"{argument.agent_id} 第 {argument.round} 轮",
+                    summary=display_agent_argument_text(
+                        argument=argument.argument,
+                        agent_id=argument.agent_id,
+                        role=argument.role,
+                        round_number=argument.round,
+                        confidence=argument.confidence,
+                        referenced_evidence_ids=argument.referenced_evidence_ids,
+                        counter_evidence_ids=argument.counter_evidence_ids,
+                    ),
                 )
             )
             if judgment is not None and argument.agent_argument_id in judgment.referenced_agent_argument_ids:
@@ -318,8 +346,14 @@ class WorkflowOrchestrator:
                 WorkflowTraceNode(
                     node_type="round_summary",
                     node_id=summary.round_summary_id,
-                    title=f"Round {summary.round} summary",
-                    summary=summary.summary,
+                    title=f"第 {summary.round} 轮摘要",
+                    summary=display_round_summary_text(
+                        summary=summary.summary,
+                        round_number=summary.round,
+                        agent_argument_ids=summary.agent_argument_ids,
+                        referenced_evidence_ids=summary.referenced_evidence_ids,
+                        disputed_evidence_ids=summary.disputed_evidence_ids,
+                    ),
                 )
             )
             for argument_id in summary.agent_argument_ids:
@@ -338,21 +372,30 @@ class WorkflowOrchestrator:
                         edge_type="uses_round_summary",
                     )
                 )
-        for evidence in self._query_evidence(run, limit=100):
+        evidence_items = self._query_evidence(run, limit=100)
+        raw_items_by_ref = self._raw_items_by_ref(run, evidence_items)
+        for evidence in evidence_items:
+            raw_item = raw_items_by_ref.get(evidence.raw_ref)
+            structure_summary = self._evidence_structure_summary(run, evidence.evidence_id)
+            trace_summary = display_text_for_raw_payload(
+                structure_summary or evidence.content,
+                raw_item.raw_payload if raw_item is not None else None,
+                source_label=_source_label(raw_item, evidence.source),
+            )
             nodes.append(
                 WorkflowTraceNode(
                     node_type="evidence",
                     node_id=evidence.evidence_id,
                     title=evidence.title or evidence.evidence_id,
-                    summary=evidence.content or evidence.evidence_type or "",
+                    summary=trace_summary or evidence.evidence_type or evidence.source or "",
                 )
             )
             nodes.append(
                 WorkflowTraceNode(
                     node_type="raw_item",
                     node_id=evidence.raw_ref,
-                    title=f"Raw item {evidence.raw_ref}",
-                    summary=evidence.source or "",
+                    title=(raw_item.title if raw_item is not None else None) or f"Raw item {evidence.raw_ref}",
+                    summary=_raw_item_source_summary(raw_item) if raw_item is not None else evidence.source or "",
                 )
             )
             edges.append(
@@ -372,6 +415,32 @@ class WorkflowOrchestrator:
     ) -> list[WorkflowEventRecord]:
         self._required_run(workflow_run_id)
         return self.repository.list_events(workflow_run_id, after_sequence=after_sequence)
+
+    def _upsert_workflow_entity(self, run: WorkflowRunRecord) -> None:
+        if self.entity_repository is None or run.entity_id is None:
+            return
+        upsert = getattr(self.entity_repository, "upsert_entity", None)
+        if not callable(upsert):
+            return
+
+        existing = None
+        getter = getattr(self.entity_repository, "get_entity", None)
+        if callable(getter):
+            existing = getter(run.entity_id)
+
+        aliases = _merge_aliases(
+            getattr(existing, "aliases", ()),
+            (run.ticker, run.stock_code),
+        )
+        record = EntityRecord(
+            entity_id=run.entity_id,
+            entity_type=getattr(existing, "entity_type", "company") if existing is not None else "company",
+            name=getattr(existing, "name", None) or run.stock_code or run.ticker,
+            aliases=aliases,
+            description=getattr(existing, "description", None)
+            or "A-share company entity inferred from workflow input.",
+        )
+        upsert(record)
 
     def _select_evidence(self, run: WorkflowRunRecord) -> list[str]:
         return [item.evidence_id for item in self._query_evidence(run, limit=run.query.max_results)]
@@ -492,6 +561,26 @@ class WorkflowOrchestrator:
             except KeyError:
                 continue
         return count
+
+    def _evidence_structure_summary(self, run: WorkflowRunRecord, evidence_id: str) -> str | None:
+        envelope = self._envelope(run, suffix="trace_evidence_detail", require_idempotency=False)
+        try:
+            detail = self.evidence_store.get_evidence(envelope, evidence_id)
+        except KeyError:
+            return None
+        if detail.structure is not None and detail.structure.objective_summary:
+            return detail.structure.objective_summary
+        return None
+
+    def _raw_items_by_ref(self, run: WorkflowRunRecord, evidence_items: list[Any]) -> dict[str, Any]:
+        envelope = self._envelope(run, suffix="trace_raw_items", require_idempotency=False)
+        rows: dict[str, Any] = {}
+        for evidence in evidence_items:
+            try:
+                rows[evidence.raw_ref] = self.evidence_store.get_raw(envelope, evidence.raw_ref)
+            except KeyError:
+                continue
+        return rows
 
     def _search_configuration_error(self, run: WorkflowRunRecord) -> str | None:
         search_pool = getattr(self.acquisition, "search_pool", None)
@@ -653,6 +742,75 @@ def _value(obj: Any, name: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(name, default)
     return getattr(obj, name, default)
+
+
+def _normalize_ticker(value: str) -> str:
+    text = value.strip().upper()
+    if "." in text:
+        text = text.split(".", 1)[0]
+    return text
+
+
+def _normalize_stock_code(value: str | None, *, ticker: str) -> str | None:
+    text = (value or "").strip().upper()
+    if text:
+        if "." in text:
+            prefix, suffix = text.split(".", 1)
+            return f"{prefix}.{suffix}" if prefix and suffix else text
+        if text.isdigit() and len(text) == 6:
+            return f"{text}.{_a_share_suffix(text)}"
+        return text
+    if ticker.isdigit() and len(ticker) == 6:
+        return f"{ticker}.{_a_share_suffix(ticker)}"
+    return None
+
+
+def _a_share_suffix(ticker: str) -> str:
+    return "SH" if ticker.startswith(("5", "6", "9")) else "SZ"
+
+
+def _merge_aliases(*groups: Any) -> tuple[str, ...]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if group is None:
+            continue
+        values = group if isinstance(group, (list, tuple, set)) else (group,)
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            aliases.append(text)
+    return tuple(aliases)
+
+
+def _raw_item_source_summary(raw_item: Any) -> str:
+    parts = [
+        str(value)
+        for value in (
+            getattr(raw_item, "source", None),
+            getattr(raw_item, "source_type", None),
+            getattr(raw_item, "url", None),
+        )
+        if value
+    ]
+    return " · ".join(parts)
+
+
+def _source_label(raw_item: Any | None, fallback: str | None) -> str | None:
+    source = (getattr(raw_item, "source", None) if raw_item is not None else fallback) or ""
+    normalized = str(source).strip().lower()
+    if normalized == "akshare":
+        return "AkShare"
+    if normalized == "tushare":
+        return "TuShare"
+    return str(source) if source else fallback
 
 
 def _judge_tool_call_payload(tool_call: Any) -> dict[str, Any]:

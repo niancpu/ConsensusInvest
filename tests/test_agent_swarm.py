@@ -177,11 +177,78 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         first_argument = runtime.repository.get_argument(outcome.agent_argument_ids[0])
         self.assertIsNotNone(first_argument)
         assert first_argument is not None
-        self.assertEqual("LLM argument grounded in allowed Evidence only.", first_argument.argument)
+        self.assertIn("第 1/3 轮", first_argument.argument)
+        self.assertIn("比亚迪", first_argument.argument)
         self.assertEqual(("ev_000001",), first_argument.referenced_evidence_ids)
         self.assertEqual(("ev_000002",), first_argument.counter_evidence_ids)
-        self.assertEqual("LLM round summary without new facts.", runtime.repository.list_round_summaries("wr_agent_swarm_001")[0].summary)
+        self.assertIn("第 1/3 轮", runtime.repository.list_round_summaries("wr_agent_swarm_001")[0].summary)
         self.assertEqual(["agent_argument", "round_summary"] * 3, [call["purpose"] for call in llm.calls])
+        agent_prompt = next(call["system_prompt"] for call in llm.calls if call["purpose"] == "agent_argument")
+        summary_prompt = next(call["system_prompt"] for call in llm.calls if call["purpose"] == "round_summary")
+        self.assertIn("必须使用简体中文", agent_prompt)
+        self.assertIn("必须使用简体中文", summary_prompt)
+        self.assertEqual("zh-CN", llm.calls[0]["user_payload"]["language"])
+        self.assertEqual("zh-CN", llm.calls[1]["user_payload"]["language"])
+        self.assertIn("只允许简体中文", llm.calls[0]["user_payload"]["output_schema"]["argument"])
+        self.assertIn("只允许简体中文", llm.calls[1]["user_payload"]["output_schema"]["summary"])
+
+    def test_swarm_llm_payload_repairs_reused_numeric_evidence_from_raw_payload(self):
+        store = FakeEvidenceStoreClient()
+        envelope = self.make_envelope(idempotency_key="seed_numeric_evidence")
+        package = SearchResultPackage(
+            task_id="st_numeric_001",
+            worker_id="worker_akshare",
+            source="akshare",
+            source_type="market_data",
+            target=SearchTarget(
+                ticker="002594",
+                stock_code="002594.SZ",
+                entity_id="ent_company_002594",
+                keywords=("比亚迪",),
+            ),
+            items=(
+                {
+                    "external_id": "ak_numeric_001",
+                    "title": "AkShare stock_financial_abstract 002594",
+                    "url": "akshare://stock_financial_abstract/002594",
+                    "content": "13.33 606.70 7280.40 11 12.00 -9.98 301042",
+                    "publish_time": "2026-05-12T10:00:00+00:00",
+                    "source_quality_hint": 0.8,
+                    "raw_payload": {
+                        "provider_response": {
+                            "报告期": "2026-03-31",
+                            "净利润": 606.70,
+                            "营业收入": 7280.40,
+                        },
+                        "provider_api": "stock_financial_abstract",
+                        "provider_symbol": "002594",
+                    },
+                    "metadata": {"evidence_type": "financial_report"},
+                },
+            ),
+            completed_at="2026-05-13T09:00:00+00:00",
+            metadata={"evidence_type": "financial_report"},
+        )
+        result = store.ingest_search_result(envelope, package)
+        llm = FakeLLMProvider()
+        runtime = AgentSwarmRuntime(evidence_store=store, llm_provider=llm)
+
+        outcome = runtime.run(
+            self.make_envelope(idempotency_key="run_numeric_llm_swarm"),
+            {
+                "workflow_run_id": "wr_agent_swarm_001",
+                "ticker": "002594",
+                "entity_id": "ent_company_002594",
+                "workflow_config_id": "mvp_bull_judge_v1",
+                "evidence_selection": {"evidence_ids": result.created_evidence_ids},
+            },
+        )
+
+        self.assertEqual("completed", outcome.status)
+        evidence_payload = llm.calls[0]["user_payload"]["evidence"][0]
+        self.assertIn("akshare 结构化行情/财务数据", evidence_payload["content"].lower())
+        self.assertIn("净利润：606.7", evidence_payload["content"])
+        self.assertIn("营业收入：7280.4", evidence_payload["objective_summary"])
 
     def test_judge_saves_judgment_tool_calls_and_references(self):
         store = self.make_store()
@@ -255,9 +322,15 @@ class AgentSwarmRuntimeTests(unittest.TestCase):
         self.assertEqual(("ev_000001",), judgment.key_positive_evidence_ids)
         self.assertEqual(("ev_000002",), judgment.key_negative_evidence_ids)
         self.assertEqual(("arg_000001",), judgment.referenced_agent_argument_ids)
-        self.assertEqual("LLM judgment grounded in saved arguments and Evidence.", judgment.reasoning)
+        self.assertEqual("基于已保存智能体论证和关键证据形成判断。", judgment.reasoning)
+        self.assertEqual((), judgment.risk_notes)
+        self.assertEqual((), judgment.suggested_next_checks)
+        self.assertIn("裁决模块未直接触发搜索", judgment.limitations[0])
         judge_call = llm.calls[-1]
         self.assertEqual("judge", judge_call["purpose"])
+        self.assertIn("必须使用简体中文", judge_call["system_prompt"])
+        self.assertEqual("zh-CN", judge_call["user_payload"]["language"])
+        self.assertIn("只允许简体中文", judge_call["user_payload"]["output_schema"]["reasoning"])
         self.assertEqual(
             list(swarm_outcome.round_summary_ids),
             judge_call["user_payload"]["round_summary_ids"],

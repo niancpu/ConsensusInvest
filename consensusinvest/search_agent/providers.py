@@ -20,6 +20,8 @@ from urllib.request import Request, urlopen
 
 import requests
 
+from consensusinvest.evidence_store.presentation import provider_record_summary
+
 from .models import SearchResultItem, SearchTask
 
 
@@ -744,7 +746,14 @@ def _akshare_item(
     )
     content = _first_clean(record, ("新闻内容", "内容", "content", "摘要", "summary"))
     if content is None:
-        content = json.dumps(safe_record, ensure_ascii=False, default=str)
+        content = provider_record_summary(
+            {
+                "provider_response": safe_record,
+                "provider_api": api_name,
+                "provider_symbol": symbol,
+            },
+            source_label="AkShare",
+        ) or "AkShare 返回了结构化表格行，但没有可展示的正文。"
     url = _first_clean(record, ("新闻链接", "链接", "url", "URL"))
     publish_time = _provider_datetime(
         _first_clean(record, ("发布时间", "日期", "时间", "publish_time", "published_at"))
@@ -869,7 +878,14 @@ def _tushare_item(
     api_name = _clean(record.get("_provider_api")) or "tushare"
     ts_code = _clean(record.get("_provider_symbol")) or _tushare_ts_code(task)
     date_value = _first_clean(record, ("ann_date", "trade_date", "end_date", "report_date"))
-    content = json.dumps(safe_record, ensure_ascii=False, default=str)
+    content = provider_record_summary(
+        {
+            "provider_response": safe_record,
+            "provider_api": api_name,
+            "provider_symbol": ts_code,
+        },
+        source_label="TuShare",
+    ) or "TuShare 返回了结构化表格行，但没有可展示的正文。"
     source_locator = f"tushare://{api_name}/{ts_code or 'unknown'}"
     if date_value:
         source_locator = f"{source_locator}/{date_value}"

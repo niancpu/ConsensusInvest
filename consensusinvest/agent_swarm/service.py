@@ -11,6 +11,12 @@ from consensusinvest.evidence_store import (
     EvidenceReferenceBatch,
     EvidenceStoreClient,
 )
+from consensusinvest.evidence_store.presentation import display_text_for_raw_payload
+from consensusinvest.agent_swarm.presentation import (
+    chinese_sequence,
+    chinese_text_or_none,
+    sanitize_role_output_for_display,
+)
 from consensusinvest.runtime import InternalCallEnvelope, RuntimeEvent
 
 from .models import (
@@ -160,6 +166,7 @@ class AgentSwarmRuntime:
                 gaps=gaps,
             )
 
+        raw_items_by_ref = _raw_items_by_ref(self.evidence_store, envelope, details)
         round_numbers = tuple(range(1, workflow_config.debate_rounds + 1))
         agent_runs = {}
         for agent in workflow_config.agents:
@@ -200,6 +207,7 @@ class AgentSwarmRuntime:
                         agent_config=agent_config,
                         swarm_input=swarm_input,
                         details=details,
+                        raw_items_by_ref=raw_items_by_ref,
                         round_number=round_number,
                         total_rounds=workflow_config.debate_rounds,
                         support_ids=support_ids,
@@ -371,9 +379,9 @@ def _build_argument_draft(
         f"核心材料包括：{'、'.join(evidence_titles)}。"
     )
     if round_number > 1:
-        argument_text += " 本轮基于上一轮摘要继续压缩论点，并检查是否存在相反 Evidence。"
+        argument_text += " 本轮基于上一轮摘要继续压缩论点，并检查是否存在反向证据。"
     if counter_ids:
-        argument_text += " 同时存在反向或待核对 Evidence，需要 Judge 保留限制条件。"
+        argument_text += " 同时存在反向或待核对证据，需要裁决模块保留限制条件。"
 
     confidence = _round_confidence(details, round_number)
     return AgentArgumentDraft(
@@ -387,7 +395,7 @@ def _build_argument_draft(
         limitations=(agent_config.limitation,),
         role_output={
             agent_config.stance_output_key: (
-                "证据整体支持当前 thesis，但结论必须通过 Evidence Reference 回查。"
+                "证据整体支持当前投资假设，但结论必须能通过证据引用回查。"
             ),
             agent_config.impact_output_key: round(max(0.0, confidence - 0.08), 2),
             "round": round_number,
@@ -402,21 +410,37 @@ def _build_llm_argument_draft(
     agent_config: DebateAgentConfig,
     swarm_input: AgentSwarmInput,
     details: list[Any],
+    raw_items_by_ref: Mapping[str, Any],
     round_number: int,
     total_rounds: int,
     support_ids: tuple[str, ...],
     counter_ids: tuple[str, ...],
 ) -> AgentArgumentDraft:
     allowed_ids = tuple(detail.evidence.evidence_id for detail in details)
+    fallback = _build_argument_draft(
+        agent_config=agent_config,
+        swarm_input=swarm_input,
+        details=details,
+        round_number=round_number,
+        total_rounds=total_rounds,
+        support_ids=support_ids,
+        counter_ids=counter_ids,
+    )
     payload = {
         "task": "build_agent_argument",
+        "language": "zh-CN",
+        "hard_requirements": [
+            "argument、limitations、role_output 内所有自然语言字段必须使用简体中文。",
+            "不要输出英文段落；英文只能出现在证据 ID、字段名、ticker、URL 或专有名词中。",
+            "如果引用证据，请写成中文句子并保留证据 ID。",
+        ],
         "output_schema": {
-            "argument": "string",
+            "argument": "只允许简体中文自然语言 string",
             "confidence": "number between 0 and 1",
             "referenced_evidence_ids": ["evidence_id from allowed_evidence_ids"],
             "counter_evidence_ids": ["evidence_id from allowed_evidence_ids"],
-            "limitations": ["string"],
-            "role_output": "object",
+            "limitations": ["只允许简体中文自然语言 string"],
+            "role_output": "object，解释性文本只允许使用简体中文",
         },
         "workflow": {
             "workflow_run_id": swarm_input.workflow_run_id,
@@ -437,7 +461,7 @@ def _build_llm_argument_draft(
         "allowed_evidence_ids": list(allowed_ids),
         "preferred_support_ids": list(support_ids),
         "preferred_counter_ids": list(counter_ids),
-        "evidence": _llm_evidence_payload(details),
+        "evidence": _llm_evidence_payload(details, raw_items_by_ref=raw_items_by_ref),
     }
     raw = llm_provider.complete_json(
         purpose="agent_argument",
@@ -448,28 +472,20 @@ def _build_llm_argument_draft(
     counters = _filter_ids(_clean_sequence(raw.get("counter_evidence_ids")), allowed_ids)
     if not references:
         references = support_ids
-    limitations = tuple(_clean_sequence(raw.get("limitations"))) or (agent_config.limitation,)
+    limitations = tuple(_clean_chinese_sequence(raw.get("limitations"))) or (agent_config.limitation,)
     role_output = raw.get("role_output")
     if not isinstance(role_output, Mapping):
         role_output = {}
-    role_output = dict(role_output)
+    role_output = _sanitize_role_output(role_output)
     role_output.setdefault("llm_provider", "litellm")
     role_output.setdefault("round", round_number)
     role_output.setdefault("total_rounds", total_rounds)
+    argument = _clean_chinese_text(raw.get("argument")) or fallback.argument
     return AgentArgumentDraft(
         agent_id=agent_config.agent_id,
         role=agent_config.role,
         round=round_number,
-        argument=_clean_key_value(raw.get("argument"))
-        or _build_argument_draft(
-            agent_config=agent_config,
-            swarm_input=swarm_input,
-            details=details,
-            round_number=round_number,
-            total_rounds=total_rounds,
-            support_ids=references,
-            counter_ids=counters,
-        ).argument,
+        argument=argument,
         confidence=_bounded_float(raw.get("confidence"), default=_round_confidence(details, round_number)),
         referenced_evidence_ids=references,
         counter_evidence_ids=counters,
@@ -505,7 +521,12 @@ def _build_round_summary_draft(
             system_prompt=_ROUND_SUMMARY_SYSTEM_PROMPT,
             user_payload={
                 "task": "build_round_summary",
-                "output_schema": {"summary": "string"},
+                "language": "zh-CN",
+                "hard_requirements": [
+                    "summary 必须使用简体中文。",
+                    "不要输出英文段落；英文只能出现在证据 ID、字段名、ticker 或专有名词中。",
+                ],
+                "output_schema": {"summary": "只允许简体中文自然语言 string"},
                 "workflow_run_id": workflow_run_id,
                 "round": round_number,
                 "total_rounds": total_rounds,
@@ -525,7 +546,7 @@ def _build_round_summary_draft(
                 ],
             },
         )
-        summary_text = _clean_key_value(raw.get("summary")) or summary_text
+        summary_text = _clean_chinese_text(raw.get("summary")) or summary_text
     return RoundSummaryDraft(
         workflow_run_id=workflow_run_id,
         round=round_number,
@@ -597,12 +618,12 @@ def _round_summary_text(
     )
     summary = (
         f"第 {round_number}/{total_rounds} 轮由 {participants} 完成论证压缩，"
-        f"保留 {referenced_count} 条支持 Evidence。"
+        f"保留 {referenced_count} 条支持证据。"
     )
     if disputed_count:
-        summary += f" 同时标记 {disputed_count} 条反向或待核对 Evidence。"
+        summary += f" 同时标记 {disputed_count} 条反向或待核对证据。"
     else:
-        summary += " 未发现单独的反向 Evidence。"
+        summary += " 未发现单独的反向证据。"
     return summary
 
 
@@ -636,6 +657,7 @@ def _build_judgment_record(
     arguments: list[AgentArgumentRecord],
     summaries: list[RoundSummaryRecord],
     details: list[Any],
+    raw_items_by_ref: Mapping[str, Any],
     created_at: datetime,
 ) -> JudgmentRecord:
     positive_ids = tuple(detail.evidence.evidence_id for detail in details[:1])
@@ -653,14 +675,14 @@ def _build_judgment_record(
             key_positive_evidence_ids=positive_ids,
             key_negative_evidence_ids=negative_ids,
             reasoning=(
-                "基于已保存 Round Summary、Agent Argument 和 key Evidence，"
-                "基本面支持 thesis 仍需与风险项共同评估。"
+                "基于已保存轮次摘要、智能体论证和关键证据，"
+                "基本面改善假设仍需与风险项共同评估。"
             ),
-            risk_notes=("反向 Evidence 或缺口会压低最终信号置信度。",) if negative_ids else (),
+            risk_notes=("反向证据或证据缺口会压低最终信号置信度。",) if negative_ids else (),
             suggested_next_checks=("补充最新同业横向估值对比",),
             referenced_agent_argument_ids=argument_ids,
             limitations=(
-                "Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",
+                "裁决模块未直接触发搜索，缺口需交由编排器判断是否补齐。",
                 *summary_limitations,
             ),
             created_at=created_at,
@@ -673,17 +695,23 @@ def _build_judgment_record(
         system_prompt=_JUDGE_SYSTEM_PROMPT,
         user_payload={
             "task": "build_judgment",
+            "language": "zh-CN",
+            "hard_requirements": [
+                "reasoning、risk_notes、suggested_next_checks、limitations 必须使用简体中文。",
+                "不要输出英文段落；英文只能出现在证据 ID、论证 ID、字段名、ticker 或专有名词中。",
+                "最终判断必须可由已给智能体论证和证据 ID 回查。",
+            ],
             "output_schema": {
                 "final_signal": "bullish|bearish|neutral|insufficient_evidence",
                 "confidence": "number between 0 and 1",
                 "time_horizon": "string",
                 "key_positive_evidence_ids": ["evidence_id from allowed_evidence_ids"],
                 "key_negative_evidence_ids": ["evidence_id from allowed_evidence_ids"],
-                "reasoning": "string",
-                "risk_notes": ["string"],
-                "suggested_next_checks": ["string"],
+                "reasoning": "只允许简体中文自然语言 string",
+                "risk_notes": ["只允许简体中文自然语言 string"],
+                "suggested_next_checks": ["只允许简体中文自然语言 string"],
                 "referenced_agent_argument_ids": ["id from allowed_agent_argument_ids"],
-                "limitations": ["string"],
+                "limitations": ["只允许简体中文自然语言 string"],
             },
             "workflow_run_id": judge_input.workflow_run_id,
             "round_summary_ids": list(summary_ids),
@@ -715,7 +743,7 @@ def _build_judgment_record(
                 }
                 for argument in arguments
             ],
-            "evidence": _llm_evidence_payload(details),
+            "evidence": _llm_evidence_payload(details, raw_items_by_ref=raw_items_by_ref),
         },
     )
     llm_positive = _filter_ids(_clean_sequence(raw.get("key_positive_evidence_ids")), allowed_evidence_ids)
@@ -732,14 +760,14 @@ def _build_judgment_record(
         time_horizon=_clean_key_value(raw.get("time_horizon")) or "short_to_mid_term",
         key_positive_evidence_ids=llm_positive or positive_ids,
         key_negative_evidence_ids=llm_negative or negative_ids,
-        reasoning=_clean_key_value(raw.get("reasoning"))
-        or "基于已保存 Agent Argument 和 key Evidence 形成判断。",
-        risk_notes=tuple(_clean_sequence(raw.get("risk_notes"))),
-        suggested_next_checks=tuple(_clean_sequence(raw.get("suggested_next_checks"))),
+        reasoning=_clean_chinese_text(raw.get("reasoning"))
+        or "基于已保存智能体论证和关键证据形成判断。",
+        risk_notes=tuple(_clean_chinese_sequence(raw.get("risk_notes"))),
+        suggested_next_checks=tuple(_clean_chinese_sequence(raw.get("suggested_next_checks"))),
         referenced_agent_argument_ids=llm_argument_ids or argument_ids,
-        limitations=tuple(_clean_sequence(raw.get("limitations")))
+        limitations=tuple(_clean_chinese_sequence(raw.get("limitations")))
         or (
-            "Judge 未直接触发搜索，缺口需交由 Orchestrator 判断是否补齐。",
+            "裁决模块未直接触发搜索，缺口需交由编排器判断是否补齐。",
             *summary_limitations,
         ),
         created_at=created_at,
@@ -939,6 +967,7 @@ class JudgeRuntime:
                     gaps=gaps,
                 )
 
+        raw_items_by_ref = _raw_items_by_ref(self.evidence_store, envelope, details)
         judgment = _build_judgment_record(
             repository=self.repository,
             llm_provider=self.llm_provider,
@@ -946,6 +975,7 @@ class JudgeRuntime:
             arguments=arguments,
             summaries=summaries,
             details=details,
+            raw_items_by_ref=raw_items_by_ref,
             created_at=accepted_at,
         )
         self.repository.save_judgment(judgment)
@@ -1135,11 +1165,27 @@ def _suggested_search(swarm_input: AgentSwarmInput) -> SuggestedSearch:
     )
 
 
-def _llm_evidence_payload(details: list[Any]) -> list[dict[str, Any]]:
+def _llm_evidence_payload(
+    details: list[Any],
+    *,
+    raw_items_by_ref: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     payload = []
     for detail in details:
         evidence = detail.evidence
         structure = getattr(detail, "structure", None)
+        raw = raw_items_by_ref.get(detail.raw_ref) if raw_items_by_ref is not None else None
+        source_label = _source_label(raw, evidence.source)
+        content = display_text_for_raw_payload(
+            evidence.content,
+            getattr(raw, "raw_payload", None),
+            source_label=source_label,
+        )
+        objective_summary = display_text_for_raw_payload(
+            getattr(structure, "objective_summary", None),
+            getattr(raw, "raw_payload", None),
+            source_label=source_label,
+        )
         payload.append(
             {
                 "evidence_id": evidence.evidence_id,
@@ -1148,7 +1194,7 @@ def _llm_evidence_payload(details: list[Any]) -> list[dict[str, Any]]:
                 "source_type": evidence.source_type,
                 "evidence_type": evidence.evidence_type,
                 "title": evidence.title,
-                "content": evidence.content,
+                "content": content,
                 "url": evidence.url,
                 "publish_time": evidence.publish_time.isoformat()
                 if evidence.publish_time is not None
@@ -1156,11 +1202,35 @@ def _llm_evidence_payload(details: list[Any]) -> list[dict[str, Any]]:
                 "source_quality": evidence.source_quality,
                 "relevance": evidence.relevance,
                 "freshness": evidence.freshness,
-                "objective_summary": getattr(structure, "objective_summary", None),
+                "objective_summary": objective_summary,
                 "claims": getattr(structure, "claims", None),
             }
         )
     return payload
+
+
+def _raw_items_by_ref(
+    evidence_store: EvidenceStoreClient,
+    envelope: InternalCallEnvelope,
+    details: list[Any],
+) -> dict[str, Any]:
+    rows: dict[str, Any] = {}
+    for detail in details:
+        try:
+            rows[detail.raw_ref] = evidence_store.get_raw(envelope, detail.raw_ref)
+        except KeyError:
+            continue
+    return rows
+
+
+def _source_label(raw: Any | None, fallback: str | None) -> str | None:
+    source = (getattr(raw, "source", None) if raw is not None else fallback) or ""
+    normalized = str(source).strip().lower()
+    if normalized == "akshare":
+        return "AkShare"
+    if normalized == "tushare":
+        return "TuShare"
+    return str(source) if source else fallback
 
 
 def _filter_ids(values: list[str], allowed_ids: tuple[str, ...]) -> tuple[str, ...]:
@@ -1190,6 +1260,18 @@ def _clean_sequence(value: Any) -> list[str]:
         return result
     cleaned = _clean_key_value(value)
     return [cleaned] if cleaned is not None else []
+
+
+def _clean_chinese_text(value: Any) -> str | None:
+    return chinese_text_or_none(value)
+
+
+def _clean_chinese_sequence(value: Any) -> list[str]:
+    return chinese_sequence(value)
+
+
+def _sanitize_role_output(value: Mapping[str, Any]) -> dict[str, Any]:
+    return sanitize_role_output_for_display(value)
 
 
 def _bounded_float(value: Any, *, default: float) -> float:
@@ -1230,20 +1312,23 @@ def _coerce_dataclass(cls: type[_T], value: Any) -> _T:
     return cls(**{key: data[key] for key in allowed if key in data})
 
 
-_AGENT_ARGUMENT_SYSTEM_PROMPT = """You are an investment research debate agent.
-Return exactly one JSON object and no markdown.
-Use only the provided Evidence IDs. Do not invent Evidence, facts, URLs, SearchTasks, or provider calls.
-You may make analytical arguments, but every important claim must cite provided Evidence IDs.
-Never include buy/sell/hold recommendations or trade instructions in Evidence-facing fields."""
+_AGENT_ARGUMENT_SYSTEM_PROMPT = """你是面向中文用户的投资研究辩论 Agent。
+必须使用简体中文撰写 argument、limitations 和 role_output 中的自然语言内容。
+只返回一个 JSON 对象，不要输出 markdown。
+只能使用输入中提供的证据 ID；不得编造证据、事实、URL、搜索任务或外部 provider 调用。
+可以做分析性论证，但每个重要判断都必须引用已提供的证据 ID。
+不得在面向证据链的字段中输出买入、卖出、持有等交易指令。"""
 
 
-_ROUND_SUMMARY_SYSTEM_PROMPT = """You summarize one debate round for audit navigation.
-Return exactly one JSON object and no markdown.
-Do not introduce new facts. Compress only the provided Agent Arguments and preserve traceability."""
+_ROUND_SUMMARY_SYSTEM_PROMPT = """你负责为中文用户压缩一轮辩论，供审计导航使用。
+必须使用简体中文撰写 summary。
+只返回一个 JSON 对象，不要输出 markdown。
+不得引入新事实；只能压缩已提供的智能体论证，并保留可追踪性。"""
 
 
-_JUDGE_SYSTEM_PROMPT = """You are the Judge Runtime for an evidence-driven investment workflow.
-Return exactly one JSON object and no markdown.
-Use only the provided Agent Arguments and Evidence IDs.
-Do not call search, do not invent Evidence, and do not include ungrounded facts.
-The judgment may state a bounded final_signal, confidence, risks, limitations, and next checks."""
+_JUDGE_SYSTEM_PROMPT = """你是面向中文用户的、证据驱动投研工作流 Judge Runtime。
+必须使用简体中文撰写 reasoning、risk_notes、suggested_next_checks 和 limitations。
+只返回一个 JSON 对象，不要输出 markdown。
+只能使用已提供的智能体论证和证据 ID。
+不得调用搜索，不得编造证据，不得加入无依据事实。
+最终判断可以给出有边界的 final_signal、confidence、风险、限制条件和后续核对项。"""

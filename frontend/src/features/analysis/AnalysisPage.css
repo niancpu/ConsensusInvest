@@ -2,7 +2,8 @@
   --analysis-blue: #002fa7;
   --analysis-black: #000000;
   --analysis-white: #ffffff;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
   display: grid;
   grid-template-columns: 31.5% 51.5% 17%;
   grid-template-rows: 72px minmax(0, 1fr);
@@ -22,6 +23,7 @@
 }
 
 .analysis-console {
+  min-height: 0;
   display: flex;
   flex-direction: column;
   min-width: 330px;
@@ -204,6 +206,7 @@
 }
 
 .analysis-workspace {
+  min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-rows: 72px minmax(0, 1fr) 156px;
@@ -387,9 +390,10 @@
 }
 
 .analysis-inspector {
+  min-height: 0;
   min-width: 185px;
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   padding: 82px 18px 52px 0;
   background: var(--analysis-white);
 }
@@ -438,6 +442,13 @@
   background: var(--analysis-white);
 }
 
+.inspector-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
 .inspector-panel h2,
 .legend-panel h2 {
   margin: 0;
@@ -445,6 +456,12 @@
   border-bottom: 2px solid var(--analysis-black);
   font-size: 18px;
   font-weight: 800;
+}
+
+.inspector-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .description-list {
@@ -482,6 +499,39 @@
 .description-item p.long-text {
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+.source-detail {
+  display: grid;
+  gap: 6px;
+}
+
+.key-value-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.key-value-list div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.38fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.key-value-list dt,
+.key-value-list dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.key-value-list dt {
+  font-weight: 800;
+}
+
+.key-value-list dd {
+  min-width: 0;
+  word-break: break-word;
 }
 
 .description-item .payload-block {
@@ -539,6 +589,8 @@
 @media (max-width: 760px) {
   .analysis-page {
     display: block;
+    height: auto;
+    min-height: 100vh;
     overflow: visible;
   }
 

@@ -29,9 +29,12 @@ import './AnalysisPage.css';
 
 type ConnectionState = 'idle' | 'creating' | 'replaying' | 'open' | 'closed' | 'error';
 
-function AnalysisPage() {
-  const initialTicker =
-    new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('ticker') ?? '002594';
+type AnalysisPageProps = {
+  routeTicker?: string | null;
+};
+
+function AnalysisPage({ routeTicker }: AnalysisPageProps) {
+  const initialTicker = routeTicker ?? '002594';
   const [ticker, setTicker] = useState(initialTicker);
   const [configs, setConfigs] = useState<WorkflowConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState('');
@@ -53,6 +56,13 @@ function AnalysisPage() {
       .catch((error) => setErrorMessage(error.message));
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    const nextTicker = routeTicker?.trim();
+    if (nextTicker) {
+      setTicker(nextTicker);
+    }
+  }, [routeTicker]);
 
   useWorkflowStream(workflowRunId, {
     onReplaying: () => setConnection('replaying'),
@@ -194,7 +204,17 @@ function AnalysisPage() {
       setSelectedNode(baseNode);
       try {
         const detail = await getEvidence(node.node_id);
-        setSelectedNode({ ...baseNode, node_type: 'evidence', detail });
+        try {
+          const rawDetail = await getRawItem(detail.raw_ref);
+          setSelectedNode({ ...baseNode, node_type: 'evidence', detail, rawDetail });
+        } catch (rawError) {
+          setSelectedNode({
+            ...baseNode,
+            node_type: 'evidence',
+            detail,
+            rawDetailError: formatApiError(rawError, '原始数据来源加载失败'),
+          });
+        }
       } catch (error) {
         setErrorMessage(formatApiError(error, 'Evidence 加载失败'));
       }
@@ -329,19 +349,21 @@ function AnalysisPage() {
       <aside className="analysis-inspector" aria-label="Node explanation">
         <section className="inspector-panel">
           <h2>节点说明</h2>
-          {selectedNode ? (
-            <NodeInspector node={selectedNode} />
-          ) : judgment ? (
-            <JudgmentInspector judgment={judgment} />
-          ) : (
-            <TraceInspectorEmptyState
-              failureSummary={failureSummary}
-              hasWorkflow={hasWorkflow}
-              hasTraceNodes={hasTraceNodes}
-              isWorkflowFailed={isWorkflowFailed}
-              visibleFailureMessage={visibleFailureMessage}
-            />
-          )}
+          <div className="inspector-body">
+            {selectedNode ? (
+              <NodeInspector node={selectedNode} />
+            ) : judgment ? (
+              <JudgmentInspector judgment={judgment} />
+            ) : (
+              <TraceInspectorEmptyState
+                failureSummary={failureSummary}
+                hasWorkflow={hasWorkflow}
+                hasTraceNodes={hasTraceNodes}
+                isWorkflowFailed={isWorkflowFailed}
+                visibleFailureMessage={visibleFailureMessage}
+              />
+            )}
+          </div>
         </section>
 
         <section className="legend-panel">

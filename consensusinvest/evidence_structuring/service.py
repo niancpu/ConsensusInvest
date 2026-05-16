@@ -13,6 +13,7 @@ from consensusinvest.evidence_store import (
     EvidenceStructureDraft,
     RawItem,
 )
+from consensusinvest.evidence_store.presentation import display_text_for_raw_payload, needs_text_repair
 from consensusinvest.runtime import InternalCallEnvelope
 
 from .models import EvidenceStructuringOutcome
@@ -29,10 +30,15 @@ class EvidenceStructuringAgent:
         evidence_id: str,
         *,
         force: bool = False,
-    ) -> EvidenceStructuringOutcome:
+        ) -> EvidenceStructuringOutcome:
         envelope.validate_for_create()
         detail = self.evidence_store.get_evidence(envelope, evidence_id)
-        if detail.structure is not None and not force:
+        raw = self.evidence_store.get_raw(envelope, detail.raw_ref)
+        if (
+            detail.structure is not None
+            and not force
+            and not needs_text_repair(detail.structure.objective_summary)
+        ):
             return EvidenceStructuringOutcome(
                 evidence_id=evidence_id,
                 status="skipped",
@@ -40,7 +46,6 @@ class EvidenceStructuringAgent:
                 reason="structure_already_exists",
             )
 
-        raw = self.evidence_store.get_raw(envelope, detail.raw_ref)
         draft = self.build_structure_draft(detail, raw)
         structure = self.evidence_store.save_structure(envelope, draft)
         return EvidenceStructuringOutcome(
@@ -73,6 +78,14 @@ class EvidenceStructuringAgent:
             raw.content if raw is not None else None,
             raw.content_preview if raw is not None else None,
             raw.title if raw is not None else None,
+        )
+        source_text = (
+            display_text_for_raw_payload(
+                source_text,
+                raw.raw_payload if raw is not None else None,
+                source_label=_source_label(raw),
+            )
+            or source_text
         )
         objective_summary = _summary(source_text)
         claim_span = _span(source_text)
@@ -162,6 +175,17 @@ def _quality_notes(
     if not has_claim:
         notes.append("no_claim_extracted")
     return tuple(notes)
+
+
+def _source_label(raw: RawItem | None) -> str | None:
+    if raw is None:
+        return None
+    source = (raw.source or "").strip().lower()
+    if source == "akshare":
+        return "AkShare"
+    if source == "tushare":
+        return "TuShare"
+    return raw.source or None
 
 
 def _structuring_confidence(text: str, detail: EvidenceDetail) -> float:

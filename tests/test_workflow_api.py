@@ -172,6 +172,35 @@ def test_workflow_api_create_defaults_to_queued_without_autorun() -> None:
     assert data["started_at"] is None
 
 
+def test_workflow_api_create_upserts_stock_entity_for_report_views() -> None:
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "ticker": "002594",
+            "stock_code": "002594",
+            "analysis_time": "2026-05-13T10:00:00+00:00",
+            "workflow_config_id": "mvp_bull_judge_v1",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    entity = client.app.state.runtime.entity_repository.get_entity("ent_company_002594")
+    assert entity is not None
+    assert entity.aliases == ("002594", "002594.SZ")
+
+    report = client.get("/api/v1/stocks/002594.SZ/benefits-risks")
+    assert report.status_code == 200, report.text
+    data = report.json()["data"]
+    assert data["stock_code"] == "002594.SZ"
+    assert data["ticker"] == "002594"
+
+    search = client.get("/api/v1/stocks/search", params={"keyword": "002594"})
+    assert search.status_code == 200, search.text
+    assert search.json()["data"][0]["stock_code"] == "002594.SZ"
+
+
 def test_workflow_api_auto_run_returns_failed_payload_when_key_is_missing() -> None:
     client = TestClient(create_app())
     runtime = client.app.state.runtime

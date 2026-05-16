@@ -16,7 +16,7 @@ export default function NodeInspector({ node }: { node: SelectedNode }) {
             <h3>代理身份</h3>
             <p>
               {node.detail.agent_id}
-              {node.detail.role ? ` · ${node.detail.role}` : ''}
+              {node.detail.role ? ` · ${agentRoleLabel(node.detail.role)}` : ''}
               {' · 第 '}{node.detail.round}{' 轮'}
             </p>
           </article>
@@ -83,7 +83,7 @@ export default function NodeInspector({ node }: { node: SelectedNode }) {
       {node.node_type === 'evidence' && node.detail ? (
         <>
           <article className="description-item">
-            <h3>来源</h3>
+            <h3>Evidence 来源</h3>
             <p>
               {node.detail.source ?? '-'}
               {node.detail.source_type ? ` · ${node.detail.source_type}` : ''}
@@ -99,6 +99,12 @@ export default function NodeInspector({ node }: { node: SelectedNode }) {
             <h3>客观摘要</h3>
             <p className="long-text">{node.detail.objective_summary || node.detail.content || '-'}</p>
           </article>
+          {node.detail.key_facts.length > 0 ? (
+            <article className="description-item">
+              <h3>结构化事实</h3>
+              <KeyValueRows rows={node.detail.key_facts} />
+            </article>
+          ) : null}
           <article className="description-item">
             <h3>质量评分</h3>
             <p>
@@ -109,6 +115,23 @@ export default function NodeInspector({ node }: { node: SelectedNode }) {
             <h3>原始数据引用</h3>
             <p>{node.detail.raw_ref || '-'}</p>
           </article>
+          <article className="description-item">
+            <h3>原始数据来源</h3>
+            {node.rawDetail ? (
+              <SourceDetail raw={node.rawDetail} />
+            ) : (
+              <p className="long-text">
+                {node.rawDetailError ||
+                  '当前 Evidence 只返回了 raw_ref，未能取得对应 Raw Item；无法展示更细的数据来源。'}
+              </p>
+            )}
+          </article>
+          {node.rawDetail?.raw_payload ? (
+            <article className="description-item">
+              <h3>来源 Payload（节选）</h3>
+              <pre className="payload-block">{truncate(JSON.stringify(node.rawDetail.raw_payload, null, 2), 720)}</pre>
+            </article>
+          ) : null}
         </>
       ) : null}
 
@@ -150,5 +173,65 @@ export default function NodeInspector({ node }: { node: SelectedNode }) {
         </>
       ) : null}
     </div>
+  );
+}
+
+function SourceDetail({ raw }: { raw: NonNullable<Extract<SelectedNode, { node_type: 'raw_item' }>['detail']> }) {
+  const providerResponse = asRecord(raw.raw_payload.provider_response);
+  const providerApi = raw.raw_payload.provider_api ?? providerResponse?.provider_api;
+  const providerSymbol = raw.raw_payload.provider_symbol ?? providerResponse?.provider_symbol;
+  return (
+    <div className="source-detail">
+      <p>
+        {raw.source || '-'}
+        {raw.source_type ? ` · ${raw.source_type}` : ''}
+        {providerApi ? ` · ${String(providerApi)}` : ''}
+        {providerSymbol ? ` · ${String(providerSymbol)}` : ''}
+      </p>
+      {raw.title ? <p className="long-text">{raw.title}</p> : null}
+      {raw.url ? <p className="long-text">{raw.url}</p> : null}
+      {raw.publish_time || raw.fetched_at ? (
+        <p>
+          发布时间 {raw.publish_time || '-'} / 抓取时间 {raw.fetched_at || '-'}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function agentRoleLabel(role: string): string {
+  const labels: Record<string, string> = {
+    bullish_interpreter: '多头解释',
+    bearish_interpreter: '空头复核',
+    neutral_reviewer: '中性复核',
+    risk_reviewer: '风险复核',
+  };
+  return labels[role] ?? role;
+}
+
+function KeyValueRows({ rows }: { rows: Array<Record<string, unknown>> }) {
+  return (
+    <dl className="key-value-list">
+      {rows.slice(0, 8).map((row, index) => {
+        const name = row.name ?? row.metric ?? row.key ?? `fact_${index + 1}`;
+        const value = row.value ?? row.text ?? row.claim ?? '-';
+        const unit = row.unit ? ` ${String(row.unit)}` : '';
+        const period = row.period ? `（${String(row.period)}）` : '';
+        return (
+          <div key={`${String(name)}-${index}`}>
+            <dt>{String(name)}</dt>
+            <dd>
+              {String(value)}
+              {unit}
+              {period}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
   );
 }

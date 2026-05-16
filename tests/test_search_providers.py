@@ -256,6 +256,49 @@ def test_akshare_provider_maps_optional_module_results():
     assert item["raw_payload"]["provider_symbol"] == "002594"
 
 
+def test_akshare_provider_summarizes_numeric_table_rows_with_field_names():
+    class FakeAkShare:
+        def stock_financial_abstract(self, *, symbol):
+            assert symbol == "002594"
+            return FakeFrame(
+                [
+                    {
+                        "报告期": "2026-03-31",
+                        "净利润": 606.70,
+                        "营业收入": 7280.40,
+                        "资产负债率": 72.20,
+                        "股票代码": "002594",
+                    }
+                ]
+            )
+
+    provider = AkShareSearchProvider(akshare_module=FakeAkShare())
+    task = SearchTask(
+        task_type="stock_research",
+        target={
+            "ticker": "002594",
+            "stock_code": "002594.SZ",
+            "entity_id": "ent_company_002594",
+            "keywords": ["比亚迪", "BYD"],
+        },
+        scope={
+            "sources": ["akshare"],
+            "evidence_types": ["financial_report"],
+            "lookback_days": 30,
+            "max_results": 1,
+        },
+        constraints=make_task().constraints,
+    )
+
+    response = provider.search(make_envelope(), task)
+
+    item = response.items[0]
+    assert item["content"].startswith("AkShare 结构化行情/财务数据：")
+    assert "净利润：606.7" in item["content"]
+    assert "营业收入：7280.4" in item["content"]
+    assert "002594" in item["content"]
+
+
 def test_akshare_provider_maps_index_intraday_to_market_snapshot():
     class FakeAkShare:
         def index_zh_a_hist_min_em(self, *, symbol, period):
@@ -570,7 +613,9 @@ def test_tushare_provider_maps_optional_client_results():
     assert item["source"] == "tushare"
     assert item["url"] == "tushare://daily_basic/002594.SZ/20260512"
     assert item["publish_time"] == "2026-05-12T00:00:00"
-    assert '"close": 100.5' in item["content"]
+    assert item["content"].startswith("TuShare 结构化行情/财务数据：")
+    assert "close：100.5" in item["content"]
+    assert "turnover_rate：1.2" in item["content"]
     assert item["raw_payload"]["provider_api"] == "daily_basic"
     assert item["raw_payload"]["provider_symbol"] == "002594.SZ"
 

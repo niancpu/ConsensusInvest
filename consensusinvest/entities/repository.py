@@ -55,6 +55,10 @@ class InMemoryEntityRepository:
     def get_entity(self, entity_id: str) -> EntityRecord | None:
         return self.entities.get(entity_id)
 
+    def upsert_entity(self, record: EntityRecord) -> EntityRecord:
+        self.entities[record.entity_id] = record
+        return record
+
     def list_relations(self, entity_id: str, *, depth: int = 1) -> list[EntityRelationRecord]:
         del depth
         return [

@@ -17,6 +17,14 @@ from .models import (
     JudgmentRecord,
     RoundSummaryRecord,
 )
+from .presentation import (
+    display_agent_argument_text,
+    display_agent_limitations,
+    display_chinese_notes,
+    display_judgment_reasoning,
+    display_round_summary_text,
+    sanitize_role_output_for_display,
+)
 from .repository import InMemoryAgentSwarmRepository
 from .schemas import (
     AgentArgumentView,
@@ -255,12 +263,20 @@ def _argument_view(row: AgentArgumentRecord) -> AgentArgumentView:
         agent_id=row.agent_id,
         role=row.role,
         round=row.round,
-        argument=row.argument,
+        argument=display_agent_argument_text(
+            argument=row.argument,
+            agent_id=row.agent_id,
+            role=row.role,
+            round_number=row.round,
+            confidence=row.confidence,
+            referenced_evidence_ids=row.referenced_evidence_ids,
+            counter_evidence_ids=row.counter_evidence_ids,
+        ),
         confidence=row.confidence,
         referenced_evidence_ids=list(row.referenced_evidence_ids),
         counter_evidence_ids=list(row.counter_evidence_ids),
-        limitations=list(row.limitations),
-        role_output=dict(row.role_output),
+        limitations=display_agent_limitations(row.limitations),
+        role_output=sanitize_role_output_for_display(row.role_output),
         created_at=_dt(row.created_at),
     )
 
@@ -270,7 +286,13 @@ def _round_summary_view(row: RoundSummaryRecord) -> RoundSummaryView:
         round_summary_id=row.round_summary_id,
         workflow_run_id=row.workflow_run_id,
         round=row.round,
-        summary=row.summary,
+        summary=display_round_summary_text(
+            summary=row.summary,
+            round_number=row.round,
+            agent_argument_ids=row.agent_argument_ids,
+            referenced_evidence_ids=row.referenced_evidence_ids,
+            disputed_evidence_ids=row.disputed_evidence_ids,
+        ),
         participants=list(row.participants),
         agent_argument_ids=list(row.agent_argument_ids),
         referenced_evidence_ids=list(row.referenced_evidence_ids),
@@ -289,11 +311,21 @@ def _judgment_view(repository: InMemoryAgentSwarmRepository, row: JudgmentRecord
         time_horizon=row.time_horizon,
         key_positive_evidence_ids=list(row.key_positive_evidence_ids),
         key_negative_evidence_ids=list(row.key_negative_evidence_ids),
-        reasoning=row.reasoning,
-        risk_notes=list(row.risk_notes),
-        suggested_next_checks=list(row.suggested_next_checks),
+        reasoning=display_judgment_reasoning(
+            reasoning=row.reasoning,
+            final_signal=row.final_signal,
+            confidence=row.confidence,
+            positive_evidence_ids=row.key_positive_evidence_ids,
+            negative_evidence_ids=row.key_negative_evidence_ids,
+            referenced_agent_argument_ids=row.referenced_agent_argument_ids,
+        ),
+        risk_notes=display_chinese_notes(row.risk_notes, fallback="原始风险说明不是合规中文，需重新生成或补充中文说明。"),
+        suggested_next_checks=display_chinese_notes(
+            row.suggested_next_checks,
+            fallback="原始后续核对项不是合规中文，需重新生成或补充中文说明。",
+        ),
         referenced_agent_argument_ids=list(row.referenced_agent_argument_ids),
-        limitations=list(row.limitations),
+        limitations=display_chinese_notes(row.limitations, fallback="原始限制说明不是合规中文，需重新生成或补充中文说明。"),
         tool_call_count=tool_call_count,
         created_at=_dt(row.created_at),
         links=JudgmentLinks(

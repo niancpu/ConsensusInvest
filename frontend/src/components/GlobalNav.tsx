@@ -10,7 +10,7 @@ const navItems: Array<{ key: NavKey; label: string; href: string }> = [
 function GlobalNav({ active, className }: { active?: NavKey; className: string }) {
   return (
     <header className={className}>
-      <a className="brand" href="/">
+      <a className="brand" href="#home">
         ConsensusInvest
       </a>
       <nav className="nav-links" aria-label="Primary">

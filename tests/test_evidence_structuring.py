@@ -135,6 +135,49 @@ class EvidenceStructuringAgentContractTests(unittest.TestCase):
         self.assertEqual([], store.saved_structures)
         self.assertIs(existing, result.structure)
 
+    def test_rebuilds_existing_numeric_structure_from_raw_payload(self):
+        existing = EvidenceStructure(
+            structure_id="struct_existing",
+            evidence_id="ev_000001",
+            version=1,
+            objective_summary="13.33 606.70 7280.40 11 12.00 -9.98 301042",
+            claims=[{"claim": "13.33 606.70 7280.40", "evidence_span": "13.33"}],
+            created_by_agent_id="evidence_structurer_v1",
+        )
+        store = RecordingEvidenceStore(existing_structure=existing)
+        store.raw = replace(
+            store.raw,
+            source="akshare",
+            source_type="market_data",
+            raw_payload={
+                "provider_response": {
+                    "报告期": "2026-03-31",
+                    "净利润": 606.70,
+                    "营业收入": 7280.40,
+                    "资产负债率": 72.20,
+                    "_provider_api": "stock_financial_abstract",
+                },
+                "provider_api": "stock_financial_abstract",
+                "provider_symbol": "002594",
+            },
+        )
+        store.evidence = replace(
+            store.evidence,
+            source="akshare",
+            source_type="market_data",
+            content="13.33 606.70 7280.40 11 12.00 -9.98 301042",
+        )
+        agent = self.make_agent(store)
+
+        result = agent.structure_evidence(self.make_envelope(), "ev_000001")
+
+        self.assertEqual("structured", result.status)
+        self.assertEqual(1, len(store.saved_structures))
+        draft = store.saved_structures[0]
+        self.assertIn("AkShare 结构化行情/财务数据", draft.objective_summary)
+        self.assertIn("净利润：606.7", draft.objective_summary)
+        self.assertIn("营业收入：7280.4", draft.objective_summary)
+
     def test_does_not_pass_directional_fields_into_structure(self):
         store = RecordingEvidenceStore()
         store.raw = replace(

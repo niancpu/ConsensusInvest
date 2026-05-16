@@ -106,6 +106,7 @@ def build_runtime(*, seed_demo_data: bool = False) -> AppRuntime:
         agent_swarm=agent_swarm,
         judge=judge,
         acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+        entity_repository=entity_repository,
     )
     return AppRuntime(
         evidence_store=evidence_store,
