@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react';
+import type {
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import GlobalNav from '../../components/GlobalNav';
 import { formatApiError } from '../../api/errors';
 import {
@@ -36,6 +40,8 @@ type AnalysisPageProps = {
 };
 
 type GraphPanState = {
+  button: number;
+  didDrag: boolean;
   pointerId: number;
   startX: number;
   startY: number;
@@ -52,6 +58,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   const initialTicker = routeTicker ?? '002594';
   const graphBoardRef = useRef<HTMLDivElement>(null);
   const graphPanRef = useRef<GraphPanState | null>(null);
+  const suppressGraphClickRef = useRef(false);
   const [ticker, setTicker] = useState(initialTicker);
   const [configs, setConfigs] = useState<WorkflowConfig[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState('');
@@ -147,7 +154,12 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     }
 
     function handleNativeGraphWheel(event: WheelEvent) {
+      if (!isWheelEventInsideElement(event, board)) {
+        return;
+      }
+
       event.preventDefault();
+      event.stopPropagation();
       const wheelDeltaY = normalizeWheelDeltaY(event);
       if (wheelDeltaY === 0) {
         return;
@@ -158,8 +170,9 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
       zoomGraphAt(board, event.clientX, event.clientY, zoomFactor);
     }
 
-    board.addEventListener('wheel', handleNativeGraphWheel, { passive: false });
-    return () => board.removeEventListener('wheel', handleNativeGraphWheel);
+    const options: AddEventListenerOptions = { capture: true, passive: false };
+    window.addEventListener('wheel', handleNativeGraphWheel, options);
+    return () => window.removeEventListener('wheel', handleNativeGraphWheel, options);
   }, [hasTraceNodes]);
 
   const judgment = snapshot?.judgment ?? null;
@@ -353,7 +366,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   }
 
   function handleGraphPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!hasTraceNodes || event.button !== 2) {
+    if (!hasTraceNodes || (event.button !== 0 && event.button !== 2)) {
       return;
     }
 
@@ -362,9 +375,13 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
       return;
     }
 
-    event.preventDefault();
+    if (event.button === 2) {
+      event.preventDefault();
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     graphPanRef.current = {
+      button: event.button,
+      didDrag: false,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
@@ -381,14 +398,20 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
       return;
     }
 
-    if ((event.buttons & 2) === 0) {
+    if ((event.buttons & pointerButtonMask(pan.button)) === 0) {
       finishGraphPan(event);
       return;
     }
 
+    const deltaX = event.clientX - pan.startX;
+    const deltaY = event.clientY - pan.startY;
+    if (Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2) {
+      pan.didDrag = true;
+    }
+
     event.preventDefault();
-    board.scrollLeft = pan.scrollLeft - (event.clientX - pan.startX);
-    board.scrollTop = pan.scrollTop - (event.clientY - pan.startY);
+    board.scrollLeft = pan.scrollLeft - deltaX;
+    board.scrollTop = pan.scrollTop - deltaY;
   }
 
   function handleGraphPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
@@ -399,10 +422,20 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
     finishGraphPan(event);
   }
 
-  function handleGraphContextMenu(event: ReactPointerEvent<HTMLDivElement>) {
+  function handleGraphContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
     if (hasTraceNodes) {
       event.preventDefault();
     }
+  }
+
+  function handleGraphClickCapture(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!suppressGraphClickRef.current) {
+      return;
+    }
+
+    suppressGraphClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   function finishGraphPan(event: ReactPointerEvent<HTMLDivElement>) {
@@ -413,6 +446,12 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
 
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    suppressGraphClickRef.current = pan.button === 0 && pan.didDrag;
+    if (suppressGraphClickRef.current) {
+      window.setTimeout(() => {
+        suppressGraphClickRef.current = false;
+      }, 100);
     }
     graphPanRef.current = null;
     setIsGraphPanning(false);
@@ -482,6 +521,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
         <div
           className={`graph-board ${isGraphPanning ? 'panning' : ''}`}
           ref={graphBoardRef}
+          onClickCapture={handleGraphClickCapture}
           onContextMenu={handleGraphContextMenu}
           onPointerCancel={handleGraphPointerCancel}
           onPointerDown={handleGraphPointerDown}
@@ -579,6 +619,29 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
 
 function clampGraphZoom(value: number): number {
   return Math.min(MAX_GRAPH_ZOOM, Math.max(MIN_GRAPH_ZOOM, value));
+}
+
+function isWheelEventInsideElement(event: WheelEvent, element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  return (
+    event.clientX >= rect.left &&
+    event.clientX <= rect.right &&
+    event.clientY >= rect.top &&
+    event.clientY <= rect.bottom
+  );
+}
+
+function pointerButtonMask(button: number): number {
+  if (button === 0) {
+    return 1;
+  }
+  if (button === 1) {
+    return 4;
+  }
+  if (button === 2) {
+    return 2;
+  }
+  return 0;
 }
 
 function syncAnalysisRoute(workflowRunId: string, ticker: string): void {

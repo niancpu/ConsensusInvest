@@ -232,14 +232,21 @@
 .graph-board {
   min-height: 0;
   border: 0;
-  cursor: default;
+  cursor: grab;
   overflow: auto;
   overscroll-behavior: contain;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .graph-board.panning {
   cursor: grabbing;
+}
+
+.graph-board svg text {
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .graph-zoom-surface {
