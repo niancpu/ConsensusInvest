@@ -31,6 +31,8 @@
   background: var(--analysis-blue);
   color: var(--analysis-white);
   border-right: 1px solid var(--analysis-black);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .console-block {
@@ -121,6 +123,126 @@
   font-family: "Courier New", monospace;
   font-size: 11px;
   line-height: 1.5;
+}
+
+.stage-panel {
+  padding: 14px 12px;
+  border: 1px solid var(--analysis-white);
+  font-family: "Courier New", monospace;
+}
+
+.stage-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.stage-panel-header strong {
+  padding: 2px 7px;
+  background: var(--analysis-white);
+  color: var(--analysis-blue);
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+}
+
+.stage-title {
+  display: block;
+  min-width: 0;
+  margin-bottom: 8px;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 22px;
+  line-height: 1.15;
+  word-break: break-word;
+}
+
+.stage-panel p {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.stage-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 12px;
+  border: 1px solid var(--analysis-white);
+}
+
+.stage-meta div {
+  min-width: 0;
+  padding: 7px 8px;
+  border-right: 1px solid var(--analysis-white);
+}
+
+.stage-meta div:last-child {
+  border-right: 0;
+}
+
+.stage-meta dt,
+.stage-meta dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.stage-meta dt {
+  font-size: 10px;
+  opacity: 0.75;
+}
+
+.stage-meta dd {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stage-track {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.stage-step {
+  min-width: 0;
+  min-height: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.stage-step-done,
+.stage-step-current {
+  background: var(--analysis-white);
+  color: var(--analysis-blue);
+}
+
+.stage-step-current {
+  font-weight: 800;
+}
+
+.stage-panel-danger {
+  background: #7f1d1d;
+}
+
+.stage-panel-success .stage-title,
+.stage-panel-success .stage-panel-header span {
+  color: var(--analysis-white);
+}
+
+.stage-panel-muted,
+.stage-panel-idle {
+  border-style: dashed;
 }
 
 .status-table {

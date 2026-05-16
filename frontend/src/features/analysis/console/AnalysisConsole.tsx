@@ -4,6 +4,7 @@ import {
   AGENT_MODES,
   SOURCE_STATUSES,
   agentRowsFromSnapshot,
+  getStageDisplay,
   sourceRowsFromSnapshot,
 } from './consoleData';
 
@@ -40,6 +41,8 @@ export default function AnalysisConsole({
   latestStage,
   errorMessage,
 }: Props) {
+  const stageDisplay = getStageDisplay(latestStage, latestStatus);
+
   return (
     <aside className="analysis-console" aria-label="Analysis controls">
       <form className="console-block" onSubmit={onCreateWorkflow}>
@@ -89,6 +92,41 @@ export default function AnalysisConsole({
           <span>{connection}</span>
           <span>run</span>
           <span>{workflowRunId ? workflowRunId.slice(-8) : '-'}</span>
+        </div>
+      </section>
+
+      <section className={`console-block stage-panel stage-panel-${stageDisplay.tone}`} aria-label="当前分析阶段">
+        <div className="stage-panel-header">
+          <span>当前阶段</span>
+          <strong>{stageDisplay.progressLabel}</strong>
+        </div>
+        <strong className="stage-title">{stageDisplay.label}</strong>
+        <p>{stageDisplay.description}</p>
+        <dl className="stage-meta">
+          <div>
+            <dt>stage</dt>
+            <dd>{latestStage}</dd>
+          </div>
+          <div>
+            <dt>status</dt>
+            <dd>{latestStatus}</dd>
+          </div>
+          <div>
+            <dt>conn</dt>
+            <dd>{connection}</dd>
+          </div>
+        </dl>
+        <div className="stage-track" aria-label="Workflow stage progress">
+          {stageDisplay.steps.map((step) => (
+            <span
+              aria-current={step.state === 'current' ? 'step' : undefined}
+              className={`stage-step stage-step-${step.state}`}
+              key={step.key}
+              title={step.label}
+            >
+              {step.label}
+            </span>
+          ))}
         </div>
       </section>
 
