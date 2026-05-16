@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.7",
     "litellm>=1.84.0",
     "akshare>=1.18.60",
+    "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]
