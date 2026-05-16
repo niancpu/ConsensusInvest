@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from consensusinvest.evidence_store import EvidenceReference
+from consensusinvest.runtime.sqlite import open_sqlite_connection
 
 from .models import (
     AgentArgumentDraft,
@@ -26,12 +27,12 @@ class SQLiteAgentSwarmRepository:
 
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = str(db_path)
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._sqlite = open_sqlite_connection(self.db_path)
+        self._conn = self._sqlite.connection
         self._ensure_schema()
 
     def close(self) -> None:
-        self._conn.close()
+        self._sqlite.close()
 
     def start_agent_run(
         self,
