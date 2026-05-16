@@ -74,22 +74,6 @@ export type StockAnalysisView = {
   updated_at: string;
 };
 
-
-export type IndustryDetailsView = {
-  stock_code: string;
-  ticker: string;
-  report_run_id: string;
-  industry_entity_id: string;
-  industry_name: string;
-  policy_support_level: 'low' | 'medium' | 'high';
-  policy_support_desc: string;
-  supply_demand_status: string;
-  competition_landscape: string;
-  referenced_evidence_ids: string[];
-  market_snapshot_ids: string[];
-  updated_at: string;
-};
-
 export type EventImpactRankingView = {
   stock_code: string;
   ticker: string;

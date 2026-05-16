@@ -6,7 +6,6 @@ import type {
   EventImpactRankingView,
   IndexIntraday,
   IndexOverview,
-  IndustryDetailsView,
   MarketStocksList,
   MarketWarning,
   SearchTaskStatusView,
@@ -27,35 +26,28 @@ export async function searchStocks(keyword: string, signal?: AbortSignal): Promi
 
 export async function getStockAnalysis(stockCode: string, signal?: AbortSignal): Promise<StockAnalysisView> {
   const params = new URLSearchParams({ refresh: 'never', latest: 'true' });
-  return getReportResource<SingleResponse<StockAnalysisView>>(
+  return getRetriedReportResource<SingleResponse<StockAnalysisView>>(
     `/api/v1/stocks/${encodeURIComponent(stockCode)}/analysis?${params.toString()}`,
     signal,
   ).then((response) => response.data);
 }
 
-export async function getIndustryDetails(stockCode: string, signal?: AbortSignal): Promise<IndustryDetailsView> {
-  return getReportResource<SingleResponse<IndustryDetailsView>>(
-    `/api/v1/stocks/${encodeURIComponent(stockCode)}/industry-details`,
-    signal,
-  ).then((response) => response.data);
-}
-
 export async function getEventImpactRanking(stockCode: string, signal?: AbortSignal): Promise<EventImpactRankingView> {
-  return getReportResource<SingleResponse<EventImpactRankingView>>(
+  return getRetriedReportResource<SingleResponse<EventImpactRankingView>>(
     `/api/v1/stocks/${encodeURIComponent(stockCode)}/event-impact-ranking?limit=10`,
     signal,
   ).then((response) => response.data);
 }
 
 export async function getBenefitsRisks(stockCode: string, signal?: AbortSignal): Promise<BenefitsRisksView> {
-  return getReportResource<SingleResponse<BenefitsRisksView>>(
+  return getRetriedReportResource<SingleResponse<BenefitsRisksView>>(
     `/api/v1/stocks/${encodeURIComponent(stockCode)}/benefits-risks`,
     signal,
   ).then((response) => response.data);
 }
 
 export async function getIndexOverview(signal?: AbortSignal): Promise<IndexOverview> {
-  return getReportResource<SingleResponse<IndexOverview>>('/api/v1/market/index-overview?refresh=stale', signal).then(
+  return apiGet<SingleResponse<IndexOverview>>('/api/v1/market/index-overview?refresh=stale', signal).then(
     (response) => response.data,
   );
 }
@@ -81,18 +73,18 @@ export async function getMarketStocks(signal?: AbortSignal): Promise<MarketStock
 }
 
 export async function getConceptRadar(signal?: AbortSignal): Promise<ConceptRadarItem[]> {
-  return getReportResource<ListResponse<ConceptRadarItem>>('/api/v1/market/concept-radar?limit=8&refresh=stale', signal).then(
+  return apiGet<ListResponse<ConceptRadarItem>>('/api/v1/market/concept-radar?limit=8&refresh=stale', signal).then(
     (response) => response.data,
   );
 }
 
 export async function getMarketWarnings(signal?: AbortSignal): Promise<MarketWarning[]> {
-  return getReportResource<ListResponse<MarketWarning>>('/api/v1/market/warnings?limit=8&refresh=stale', signal).then(
+  return apiGet<ListResponse<MarketWarning>>('/api/v1/market/warnings?limit=8&refresh=stale', signal).then(
     (response) => response.data,
   );
 }
 
-async function getReportResource<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function getRetriedReportResource<T>(path: string, signal?: AbortSignal): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= REPORT_RETRY_ATTEMPTS; attempt += 1) {

@@ -4,7 +4,6 @@ import {
   getConceptRadar,
   getEventImpactRanking,
   getIndexOverview,
-  getIndustryDetails,
   getMarketWarnings,
   getStockAnalysis,
   searchStocks,
@@ -14,7 +13,6 @@ import type {
   ConceptRadarItem,
   EventImpactRankingView,
   IndexOverview,
-  IndustryDetailsView,
   MarketWarning,
   StockAnalysisView,
   StockSearchHit,
@@ -40,7 +38,6 @@ function ReportPage() {
   const [searchText, setSearchText] = useState('002594');
   const [searchHits, setSearchHits] = useState<StockSearchHit[]>([]);
   const [analysis, setAnalysis] = useState<SectionState<StockAnalysisView>>(() => emptySection());
-  const [industry, setIndustry] = useState<SectionState<IndustryDetailsView>>(() => emptySection());
   const [events, setEvents] = useState<SectionState<EventImpactRankingView>>(() => emptySection());
   const [benefitsRisks, setBenefitsRisks] = useState<SectionState<BenefitsRisksView>>(() => emptySection());
   const [market, setMarket] = useState<IndexOverview | null>(null);
@@ -103,7 +100,6 @@ function ReportPage() {
   async function loadReport(nextStockCode: string, signal?: AbortSignal) {
     setErrorMessage('');
     setAnalysis((current) => ({ data: current.data, loading: true, error: '' }));
-    setIndustry(emptySection<IndustryDetailsView>());
     setEvents(emptySection<EventImpactRankingView>());
     setBenefitsRisks(emptySection<BenefitsRisksView>());
 
@@ -121,12 +117,6 @@ function ReportPage() {
       return;
     }
 
-    void loadReportSection({
-      request: (requestSignal) => getIndustryDetails(nextStockCode, requestSignal),
-      setSection: setIndustry,
-      signal,
-      fallback: '行业详情加载失败',
-    });
     void loadReportSection({
       request: (requestSignal) => getEventImpactRanking(nextStockCode, requestSignal),
       setSection: setEvents,
@@ -149,14 +139,11 @@ function ReportPage() {
   const hero = analysis.data?.hero;
   const summaryText = getSummaryText(hero?.summary, analysis.loading);
   const heroTitle = hero?.title ?? currentStockName;
-  const heroStatusNote = hero?.status_note ?? (analysis.loading ? '正在整理顶部摘要。' : '暂无顶部状态摘要。');
-  const heroSourceNote = hero?.source_note ?? '当前仅展示 Report Module 视图。';
-  const heroLimitationNote = hero?.limitation_note ?? null;
   const heroMeta = hero?.meta ?? [];
   const keyEvidence = analysis.data?.report.key_evidence ?? [];
   const eventItems = events.data?.items ?? [];
   const benefitsRiskItems = buildBenefitsRiskItems(benefitsRisks.data ?? undefined);
-  const mainBusy = analysis.loading || industry.loading || events.loading || benefitsRisks.loading;
+  const mainBusy = analysis.loading || events.loading || benefitsRisks.loading;
 
   return (
     <main className="report-page">
@@ -228,29 +215,10 @@ function ReportPage() {
                 </div>
               ))}
             </div>
-            {analysis.data?.action ? (
-              <div className={`signal-card ${analysis.data.action.signal}`}>
-                <div className="signal-card-header">
-                  <strong>{analysis.data.action.label}</strong>
-                  <span>{heroStatusNote}</span>
-                </div>
-                <p>{heroSourceNote}</p>
-                {heroLimitationNote ? <small>{heroLimitationNote}</small> : null}
-              </div>
-            ) : analysis.data ? (
-              <div className="signal-card neutral">
-                <div className="signal-card-header">
-                  <strong>暂无主链路判断</strong>
-                  <span>{heroStatusNote}</span>
-                </div>
-                <p>{heroSourceNote}</p>
-                {heroLimitationNote ? <small>{heroLimitationNote}</small> : null}
-              </div>
-            ) : null}
           </article>
 
           <section className="report-grid">
-            <Panel title="关键证据">
+            <Panel title="关键证据" className="report-panel--key-evidence">
               {analysis.error ? (
                 <SectionError message={analysis.error} />
               ) : keyEvidence.length > 0 ? (
@@ -263,23 +231,6 @@ function ReportPage() {
                 ))
               ) : (
                 <EmptyState text={analysis.loading ? '正在读取结构化关键证据。' : '暂无关键证据。'} />
-              )}
-            </Panel>
-
-            <Panel title="行业详情">
-              {industry.error ? (
-                <SectionError message={industry.error} />
-              ) : industry.data ? (
-                <article className="report-item">
-                  <h4>{industry.data.industry_name}</h4>
-                  <p>{industry.data.policy_support_desc}</p>
-                  <p>
-                    {industry.data.supply_demand_status} / {industry.data.competition_landscape}
-                  </p>
-                  <small>{joinEvidenceIds(industry.data.referenced_evidence_ids)}</small>
-                </article>
-              ) : (
-                <EmptyState text={industry.loading ? '正在读取行业详情。' : '暂无行业详情。'} />
               )}
             </Panel>
 
@@ -480,9 +431,9 @@ function buildBenefitsRiskItems(benefitsRisks: BenefitsRisksView | undefined) {
   ];
 }
 
-function Panel({ children, title }: { children: ReactNode; title: string }) {
+function Panel({ children, title, className = '' }: { children: ReactNode; title: string; className?: string }) {
   return (
-    <section className="report-panel">
+    <section className={`report-panel ${className}`.trim()}>
       <h3>{title}</h3>
       <div>{children}</div>
     </section>
