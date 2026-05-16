@@ -24,6 +24,17 @@ export type StockAnalysisView = {
   report_run_id: string;
   report_mode: 'report_generation' | 'with_workflow_trace';
   data_state: string;
+  hero: {
+    title: string;
+    summary: string;
+    status_note: string;
+    source_note: string;
+    limitation_note: string | null;
+    meta: Array<{
+      label: string;
+      value: string;
+    }>;
+  };
   action: {
     label: string;
     signal: 'positive' | 'neutral' | 'negative';
@@ -37,6 +48,8 @@ export type StockAnalysisView = {
       evidence_id: string;
       title: string;
       objective_summary: string;
+      publish_time?: string;
+      fetched_at?: string;
       source_quality: number;
       relevance: number;
     }>;
@@ -58,21 +71,6 @@ export type StockAnalysisView = {
     judgment: string | null;
     entity: string | null;
   };
-  updated_at: string;
-};
-
-export type IndustryDetailsView = {
-  stock_code: string;
-  ticker: string;
-  report_run_id: string;
-  industry_entity_id: string;
-  industry_name: string;
-  policy_support_level: 'low' | 'medium' | 'high';
-  policy_support_desc: string;
-  supply_demand_status: string;
-  competition_landscape: string;
-  referenced_evidence_ids: string[];
-  market_snapshot_ids: string[];
   updated_at: string;
 };
 

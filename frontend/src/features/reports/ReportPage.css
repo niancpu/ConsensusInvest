@@ -137,6 +137,23 @@
   font-size: 28px;
 }
 
+.report-heading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.report-heading-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--black);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .secondary-action {
   display: inline-flex;
   align-items: center;
@@ -170,22 +187,28 @@
   line-height: 1.7;
 }
 
-.signal-pill {
-  display: grid;
-  grid-template-columns: 120px 1fr;
+.report-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 18px;
-  padding: 12px;
+}
+
+.summary-meta-item {
+  min-width: 140px;
+  padding: 10px 12px;
   border: 1px solid var(--black);
   font-family: "Courier New", monospace;
 }
 
-.signal-pill.positive {
-  border-color: #0074ff;
+.summary-meta-item span {
+  display: block;
+  font-size: 11px;
+  margin-bottom: 6px;
 }
 
-.signal-pill.negative {
-  border-color: #b91c1c;
+.summary-meta-item strong {
+  font-size: 13px;
 }
 
 .report-grid {
@@ -193,6 +216,10 @@
   grid-template-columns: 1fr 1fr;
   gap: 18px;
   padding-top: 22px;
+}
+
+.report-panel--key-evidence {
+  grid-column: 1 / -1;
 }
 
 .report-panel {
@@ -228,12 +255,55 @@
   line-height: 1.55;
 }
 
-.report-item small {
-  font-family: "Courier New", monospace;
-  overflow-wrap: anywhere;
+.report-item:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
-.market-report {
+.report-empty {
+  margin: 0;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.market-empty {
+  margin: 0;
+  padding: 12px 0;
+  color: #4b5563;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.market-error {
+  margin: 12px 0 0;
+  padding: 10px;
+  border: 1px solid #b91c1c;
+  color: #b91c1c;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.market-loading {
+  margin: 0;
+  padding: 12px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.market-section {
+  margin-top: 18px;
+}
+
+.market-section:first-of-type {
+  margin-top: 0;
+}
+
+.market-section > :not(h3) + :not(h3) {
+  margin-top: 0;
+}
+
+.market-state {
   padding: 30px 18px;
   border-left: 1px solid var(--black);
 }

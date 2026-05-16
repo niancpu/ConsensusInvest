@@ -119,6 +119,20 @@ class ActionView(TraceableModel):
     source: Literal["main_judgment_summary"]
 
 
+class HeroMetaItem(TraceableModel):
+    label: str
+    value: str
+
+
+class HeroView(TraceableModel):
+    title: str
+    summary: str
+    status_note: str
+    source_note: str
+    limitation_note: str | None = None
+    meta: list[HeroMetaItem] = Field(default_factory=list)
+
+
 class TraceRefs(TraceableModel):
     evidence_ids: list[str] = Field(default_factory=list)
     market_snapshot_ids: list[str] = Field(default_factory=list)
@@ -143,6 +157,7 @@ class StockAnalysisView(TraceableModel):
     report_run_id: str
     report_mode: ReportMode
     data_state: DataState
+    hero: HeroView
     action: ActionView | None = None
     report: ReportBody
     trace_refs: TraceRefs

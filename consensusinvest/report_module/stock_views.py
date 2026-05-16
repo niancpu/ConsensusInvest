@@ -38,6 +38,8 @@ from .schemas import (
     EventImpactItem,
     EventImpactRankingView,
     EvidenceMatch,
+    HeroMetaItem,
+    HeroView,
     IndustryDetailsView,
     IndustryLinks,
     KeyEvidence,
@@ -53,6 +55,42 @@ from .schemas import (
     TraceRefs,
 )
 
+
+
+def _hero_summary(reasoning: str | None) -> tuple[str, str | None]:
+    if not reasoning or not reasoning.strip():
+        return "", None
+    text = " ".join(reasoning.split())
+    implementation_note = None
+    marker = "原始判断说明包含英文或乱码，已按中文展示兜底处理。"
+    if marker in text:
+        text = text.replace(marker, "").strip()
+        implementation_note = "原始判断说明已按中文可读形式展示。"
+    for separator in ("\n\n", "。", "；", ";", "!", "！", "?", "？"):
+        if separator in text:
+            first = text.split(separator, 1)[0].strip()
+            if first:
+                return first + ("。" if separator == "。" else ""), implementation_note
+    return text[:120].rstrip("，,；;：:") + ("…" if len(text) > 120 else ""), implementation_note
+
+
+def _data_state_label(data_state: DataState) -> str:
+    return {
+        DataState.READY: "已就绪",
+        DataState.PARTIAL: "部分就绪",
+        DataState.MISSING: "资料缺失",
+        DataState.PENDING_REFRESH: "等待补齐",
+        DataState.REFRESHING: "正在补齐",
+        DataState.STALE: "待更新",
+        DataState.FAILED: "加载失败",
+    }[data_state]
+
+
+def _report_mode_label(report_mode: ReportMode) -> str:
+    return {
+        ReportMode.WITH_WORKFLOW_TRACE: "主链路判断视图",
+        ReportMode.REPORT_GENERATION: "资料汇总视图",
+    }[report_mode]
 
 
 def build_stock_search(
@@ -142,7 +180,17 @@ def build_stock_analysis_view(
 
     action: ActionView | None = None
     risks: list[RiskItem] = []
-    summary_text = ""
+    summary_text = (
+        "报告视图基于已入库 Evidence Structure 与 MarketSnapshot 拼装，"
+        "未运行主 workflow；不含 Agent Swarm 论证或 Judge 结论。"
+    )
+    hero_summary = "基于已入库资料整理当前标的要点，暂无主链路判断结论。"
+    hero_status_note = "仅基于已入库资料生成报告。"
+    hero_source_note = "当前页面未关联主 workflow Judgment。"
+    hero_limitation_note: str | None = "此视图用于资料编排与引用展示，不单独生成投资建议。"
+    hero_meta = [
+        HeroMetaItem(label="报告模式", value=_report_mode_label(ReportMode.REPORT_GENERATION)),
+    ]
     if judgment is not None:
         action = ActionView(
             label=_action_label(judgment.final_signal),
@@ -155,9 +203,20 @@ def build_stock_analysis_view(
             for text in judgment.risk_notes
         ]
         summary_text = judgment.reasoning
+        hero_summary, implementation_note = _hero_summary(judgment.reasoning)
+        positive_evidence_count = len(judgment.key_positive_evidence_ids)
+        negative_evidence_count = len(judgment.key_negative_evidence_ids)
+        hero_status_note = f"当前主判断为{action.label}。"
+        hero_source_note = "内容来自主 workflow 的 Judgment 摘要。"
+        hero_limitation_note = implementation_note
+        hero_meta = [
+            HeroMetaItem(label="报告模式", value=_report_mode_label(ReportMode.WITH_WORKFLOW_TRACE)),
+            HeroMetaItem(label="关键证据", value=f"{positive_evidence_count} 条正向 / {negative_evidence_count} 条负向"),
+            HeroMetaItem(label="风险提示", value=f"{len(judgment.risk_notes)} 条"),
+        ]
     else:
         risks = _risk_disclosures(evidence_records)
-        summary_text = "；".join(_summary(detail) for detail in evidence_records[:3] if _summary(detail).strip())
+        hero_meta.append(HeroMetaItem(label="关键证据", value=f"{len(evidence_records)} 条已入库资料"))
 
     key_evidence = [
         KeyEvidence(
@@ -192,6 +251,14 @@ def build_stock_analysis_view(
         if refresh_task_id is not None:
             data_state = DataState.REFRESHING
 
+    report_mode = ReportMode.WITH_WORKFLOW_TRACE if has_workflow else ReportMode.REPORT_GENERATION
+    hero_meta.extend(
+        [
+            HeroMetaItem(label="数据状态", value=_data_state_label(data_state)),
+            HeroMetaItem(label="更新时间", value=_dt(judgment.created_at) if judgment else _now_iso()),
+        ]
+    )
+
     view = StockAnalysisView(
         stock_code=_stock_code(entity) or stock_code,
         ticker=ticker,
@@ -200,8 +267,16 @@ def build_stock_analysis_view(
         workflow_run_id=judgment.workflow_run_id if judgment else None,
         judgment_id=judgment.judgment_id if judgment else None,
         report_run_id=report_run_id,
-        report_mode=ReportMode.WITH_WORKFLOW_TRACE if has_workflow else ReportMode.REPORT_GENERATION,
+        report_mode=report_mode,
         data_state=data_state,
+        hero=HeroView(
+            title=entity.name,
+            summary=hero_summary,
+            status_note=hero_status_note,
+            source_note=hero_source_note,
+            limitation_note=hero_limitation_note,
+            meta=hero_meta,
+        ),
         action=action,
         report=ReportBody(
             title="个股研究聚合视图",
