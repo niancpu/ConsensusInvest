@@ -325,9 +325,78 @@ class WorkflowOrchestrator:
         run = self._required_run(workflow_run_id)
         nodes: list[WorkflowTraceNode] = []
         edges: list[WorkflowTraceEdge] = []
+        node_ids: set[str] = set()
+
+        def add_node(node: WorkflowTraceNode) -> None:
+            if node.node_id in node_ids:
+                return
+            node_ids.add(node.node_id)
+            nodes.append(node)
+
+        events = self.repository.list_events(workflow_run_id)
         judgment = self.agent_swarm.repository.get_judgment_by_workflow(workflow_run_id)
+        agent_runs = self.agent_swarm.repository.list_agent_runs(workflow_run_id)
+        latest_agent_run_id = _latest_agent_run_id(agent_runs)
+        for agent_run in agent_runs:
+            agent_node_id = f"agent:{agent_run.agent_id}"
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent",
+                    node_id=agent_node_id,
+                    title=agent_run.agent_id,
+                    summary=f"{agent_run.role} agent",
+                )
+            )
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent_run",
+                    node_id=agent_run.agent_run_id,
+                    title=f"{agent_run.agent_id} 执行辩论",
+                    summary=_agent_run_summary(agent_run),
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=agent_node_id,
+                    to_node_id=agent_run.agent_run_id,
+                    edge_type="executes",
+                )
+            )
+        judge_run_id = f"agent_run:judge:{workflow_run_id}"
+        has_judge_activity = judgment is not None or _has_judge_activity(events)
+        if has_judge_activity:
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent",
+                    node_id="agent:judge",
+                    title="Judge",
+                    summary="Judge agent",
+                )
+            )
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent_run",
+                    node_id=judge_run_id,
+                    title="Judge 执行裁决",
+                    summary=f"Judge action for workflow {workflow_run_id}",
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id="agent:judge",
+                    to_node_id=judge_run_id,
+                    edge_type="executes",
+                )
+            )
         if judgment is not None:
-            nodes.append(
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=judge_run_id,
+                    to_node_id=judgment.judgment_id,
+                    edge_type="produces_judgment",
+                )
+            )
+            add_node(
                 WorkflowTraceNode(
                     node_type="judgment",
                     node_id=judgment.judgment_id,
@@ -343,7 +412,7 @@ class WorkflowOrchestrator:
                 )
             )
         for argument in self.agent_swarm.repository.list_arguments(workflow_run_id):
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="agent_argument",
                     node_id=argument.agent_argument_id,
@@ -357,6 +426,13 @@ class WorkflowOrchestrator:
                         referenced_evidence_ids=argument.referenced_evidence_ids,
                         counter_evidence_ids=argument.counter_evidence_ids,
                     ),
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=argument.agent_run_id,
+                    to_node_id=argument.agent_argument_id,
+                    edge_type="produces_argument",
                 )
             )
             if judgment is not None and argument.agent_argument_id in judgment.referenced_agent_argument_ids:
@@ -376,7 +452,7 @@ class WorkflowOrchestrator:
                     )
                 )
         for summary in self.agent_swarm.repository.list_round_summaries(workflow_run_id):
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="round_summary",
                     node_id=summary.round_summary_id,
@@ -408,15 +484,51 @@ class WorkflowOrchestrator:
                 )
         evidence_items = self._query_evidence(run, limit=100)
         raw_items_by_ref = self._raw_items_by_ref(run, evidence_items)
+        search_requests_by_task_id = _search_request_metadata_by_task_id(events)
+        linked_search_request_ids: set[str] = set()
         for evidence in evidence_items:
             raw_item = raw_items_by_ref.get(evidence.raw_ref)
+            task_id = _raw_task_id(raw_item)
+            if task_id and task_id in search_requests_by_task_id:
+                search_metadata = search_requests_by_task_id.get(task_id, {})
+                search_request_id = f"search_request:{task_id}"
+                add_node(
+                    WorkflowTraceNode(
+                        node_type="search_request",
+                        node_id=search_request_id,
+                        title=_search_request_title(search_metadata.get("reason")),
+                        summary=_search_request_summary(task_id, search_metadata),
+                    )
+                )
+                if search_request_id not in linked_search_request_ids:
+                    origin_id = _search_request_origin_id(
+                        search_metadata.get("reason"),
+                        debate_agent_run_id=latest_agent_run_id,
+                        judge_run_id=judge_run_id if has_judge_activity else None,
+                    )
+                    if origin_id is not None:
+                        edges.append(
+                            WorkflowTraceEdge(
+                                from_node_id=origin_id,
+                                to_node_id=search_request_id,
+                                edge_type="requests_search",
+                            )
+                        )
+                    linked_search_request_ids.add(search_request_id)
+                edges.append(
+                    WorkflowTraceEdge(
+                        from_node_id=search_request_id,
+                        to_node_id=evidence.evidence_id,
+                        edge_type="search_result",
+                    )
+                )
             structure_summary = self._evidence_structure_summary(run, evidence.evidence_id)
             trace_summary = display_text_for_raw_payload(
                 structure_summary or evidence.content,
                 raw_item.raw_payload if raw_item is not None else None,
                 source_label=_source_label(raw_item, evidence.source),
             )
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="evidence",
                     node_id=evidence.evidence_id,
@@ -424,7 +536,7 @@ class WorkflowOrchestrator:
                     summary=trace_summary or evidence.evidence_type or evidence.source or "",
                 )
             )
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="raw_item",
                     node_id=evidence.raw_ref,
@@ -875,6 +987,87 @@ def _round_summary_ids(swarm_outcome: Any) -> tuple[str, ...]:
         return ids
     round_summary_id = getattr(swarm_outcome, "round_summary_id", None)
     return (round_summary_id,) if round_summary_id else ()
+
+
+def _latest_agent_run_id(agent_runs: list[Any]) -> str | None:
+    if not agent_runs:
+        return None
+    return max(agent_runs, key=lambda run: getattr(run, "started_at", datetime.min.replace(tzinfo=UTC))).agent_run_id
+
+
+def _has_judge_activity(events: list[WorkflowEventRecord]) -> bool:
+    for event in events:
+        if event.event_type == "judge_started":
+            return True
+        if (event.payload or {}).get("reason") == "judge_request_search":
+            return True
+    return False
+
+
+def _agent_run_summary(agent_run: Any) -> str:
+    rounds = ", ".join(str(value) for value in getattr(agent_run, "rounds", ()) or ())
+    status = getattr(agent_run, "status", "")
+    return f"status={status}; rounds={rounds or 'pending'}"
+
+
+def _search_request_metadata_by_task_id(events: list[WorkflowEventRecord]) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for event in events:
+        if event.event_type not in {"connector_started", "connector_progress"}:
+            continue
+        payload = event.payload or {}
+        task_id = payload.get("task_id")
+        if not task_id:
+            continue
+        key = str(task_id)
+        row = result.setdefault(key, {})
+        for name in ("reason", "gap_type"):
+            value = payload.get(name)
+            if value is not None:
+                row[name] = str(value)
+    return result
+
+
+def _raw_task_id(raw_item: Any | None) -> str | None:
+    if raw_item is None:
+        return None
+    ingest_context = getattr(raw_item, "ingest_context", {}) or {}
+    task_id = ingest_context.get("task_id")
+    return str(task_id) if task_id else None
+
+
+def _search_request_title(reason: str | None) -> str:
+    if reason == "agent_swarm_request_search":
+        return "辩论补充搜索"
+    if reason == "judge_request_search":
+        return "Judge补充搜索"
+    if reason == "initial_evidence_acquisition":
+        return "初始证据采集"
+    return "搜索请求"
+
+
+def _search_request_summary(task_id: str, metadata: dict[str, str]) -> str:
+    parts = [f"task_id={task_id}"]
+    reason = metadata.get("reason")
+    gap_type = metadata.get("gap_type")
+    if reason:
+        parts.append(f"reason={reason}")
+    if gap_type:
+        parts.append(f"gap_type={gap_type}")
+    return "; ".join(parts)
+
+
+def _search_request_origin_id(
+    reason: str | None,
+    *,
+    debate_agent_run_id: str | None,
+    judge_run_id: str | None,
+) -> str | None:
+    if reason == "agent_swarm_request_search":
+        return debate_agent_run_id
+    if reason == "judge_request_search":
+        return judge_run_id
+    return None
 
 
 def _to_plain(value: Any) -> Any:

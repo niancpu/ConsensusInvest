@@ -477,8 +477,18 @@ body.analysis-graph-panning * {
 
 .trace-edge.derived_from polyline,
 .trace-edge.uses_argument polyline,
-.trace-edge.uses_round_summary polyline {
+.trace-edge.uses_round_summary polyline,
+.trace-edge.executes polyline,
+.trace-edge.produces_argument polyline,
+.trace-edge.produces_judgment polyline {
   stroke: var(--analysis-black);
+  stroke-width: 1.5;
+}
+
+.trace-edge.requests_search polyline,
+.trace-edge.search_result polyline {
+  stroke: var(--analysis-blue);
+  stroke-dasharray: 5 4;
   stroke-width: 1.5;
 }
 
@@ -565,11 +575,13 @@ body.analysis-graph-panning * {
   font-size: 22px;
 }
 
+.trace-node.search_request .node-title,
 .trace-node.evidence .node-title,
 .trace-node.raw_item .node-title {
   font-size: 14px;
 }
 
+.trace-node.search_request .node-subtitle,
 .trace-node.evidence .node-subtitle,
 .trace-node.raw_item .node-subtitle {
   font-size: 9px;

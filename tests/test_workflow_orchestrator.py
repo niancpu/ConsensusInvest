@@ -163,7 +163,13 @@ def test_workflow_orchestrator_runs_swarm_judge_and_builds_trace() -> None:
     assert event_types.index("judge_tool_call_completed") < event_types.index("judgment_completed")
     nodes, edges = service.trace(run.workflow_run_id)
     assert any(node.node_type == "judgment" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:judge" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:bull_v1" for node in nodes)
+    assert any(node.node_type == "agent_run" for node in nodes)
     assert any(node.node_type == "round_summary" for node in nodes)
+    assert any(edge.edge_type == "executes" for edge in edges)
+    assert any(edge.edge_type == "produces_argument" for edge in edges)
+    assert any(edge.edge_type == "produces_judgment" and edge.to_node_id == run.judgment_id for edge in edges)
     assert any(edge.edge_type == "uses_argument" for edge in edges)
     assert any(edge.edge_type == "uses_round_summary" for edge in edges)
 
@@ -246,6 +252,16 @@ def test_workflow_orchestrator_fills_debate_search_intent_and_continues() -> Non
     events = [event.event_type for event in service.list_events(run.workflow_run_id)]
     assert "workflow_failed" not in events
     assert events.index("connector_progress") < events.index("agent_argument_completed")
+    nodes, edges = service.trace(run.workflow_run_id)
+    search_requests = [node for node in nodes if node.node_type == "search_request"]
+    assert any(node.title == "辩论补充搜索" for node in search_requests)
+    assert any(
+        "reason=agent_swarm_request_search" in node.summary
+        and "gap_type=missing_cash_flow_check" in node.summary
+        for node in search_requests
+    )
+    assert any(edge.edge_type == "requests_search" for edge in edges)
+    assert any(edge.edge_type == "search_result" for edge in edges)
 
 
 def test_workflow_orchestrator_does_not_select_evidence_from_other_workflow() -> None:
@@ -402,6 +418,9 @@ def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> 
     events = [event.event_type for event in service.list_events(run.workflow_run_id)]
     assert "connector_started" in events
     assert "agent_argument_completed" in events
+    nodes, edges = service.trace(run.workflow_run_id)
+    assert any(node.node_type == "search_request" and node.title == "初始证据采集" for node in nodes)
+    assert any(edge.edge_type == "search_result" for edge in edges)
 
 
 def test_workflow_orchestrator_auto_run_starts_in_background() -> None:
@@ -488,10 +507,18 @@ def test_workflow_orchestrator_trace_returns_running_partial_graph() -> None:
     nodes, edges = service.trace(run.workflow_run_id)
 
     assert any(node.node_type == "agent_argument" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:bull_v1" for node in nodes)
+    assert any(node.node_type == "agent_run" and node.node_id == agent_run.agent_run_id for node in nodes)
     assert any(node.node_type == "round_summary" for node in nodes)
     assert any(node.node_type == "evidence" for node in nodes)
     assert any(node.node_type == "raw_item" for node in nodes)
     assert not any(node.node_type == "judgment" for node in nodes)
+    assert any(
+        edge.from_node_id == agent_run.agent_run_id
+        and edge.to_node_id == argument.agent_argument_id
+        and edge.edge_type == "produces_argument"
+        for edge in edges
+    )
     assert any(edge.from_node_id == summary.round_summary_id for edge in edges)
     assert any(edge.to_node_id == evidence_ids[0] for edge in edges)
 

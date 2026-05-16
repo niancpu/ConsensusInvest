@@ -295,7 +295,12 @@ function normalizeEdgeType(value: string): TraceEdgeType {
     normalized === 'refuted' ||
     normalized === 'derived_from' ||
     normalized === 'cited' ||
-    normalized === 'uses_round_summary'
+    normalized === 'uses_round_summary' ||
+    normalized === 'executes' ||
+    normalized === 'produces_argument' ||
+    normalized === 'produces_judgment' ||
+    normalized === 'requests_search' ||
+    normalized === 'search_result'
   ) {
     return normalized;
   }
@@ -316,6 +321,16 @@ function labelForEdge(value: TraceEdgeType): string {
       return 'raw';
     case 'uses_round_summary':
       return 'sum';
+    case 'executes':
+      return 'run';
+    case 'produces_argument':
+      return 'arg+';
+    case 'produces_judgment':
+      return 'jud';
+    case 'requests_search':
+      return 'qry';
+    case 'search_result':
+      return 'res';
     case 'cited':
       return 'cite';
   }

@@ -8,7 +8,8 @@ type Props = {
 };
 
 export default function TraceNodeShape({ isInteractive, isSelected, node, onSelect }: Props) {
-  const isCompactNode = node.node_type === 'evidence' || node.node_type === 'raw_item';
+  const isCompactNode =
+    node.node_type === 'search_request' || node.node_type === 'evidence' || node.node_type === 'raw_item';
   const titleY = node.y + (isCompactNode ? 21 : 28);
   const subtitleY = node.y + (isCompactNode ? 39 : 49);
 

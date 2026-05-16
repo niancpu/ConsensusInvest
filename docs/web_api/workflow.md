@@ -209,10 +209,28 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
         "summary": "多头 thesis 有一定证据支持，但仍需关注资产质量指标。"
       },
       {
+        "node_type": "agent",
+        "node_id": "agent:bull_v1",
+        "title": "bull_v1",
+        "summary": "bull agent"
+      },
+      {
+        "node_type": "agent_run",
+        "node_id": "arun_20260513_bull_v1_001",
+        "title": "bull_v1 执行辩论",
+        "summary": "status=completed; rounds=1, 2, 3"
+      },
+      {
         "node_type": "agent_argument",
         "node_id": "arg_20260513_bull_v1_r1_001",
         "title": "Bull round 1",
         "summary": "盈利改善和行业政策支持构成主要多头论据。"
+      },
+      {
+        "node_type": "search_request",
+        "node_id": "search_request:st_20260513_gap_fill_001",
+        "title": "辩论补充搜索",
+        "summary": "task_id=st_20260513_gap_fill_001; reason=agent_swarm_request_search; gap_type=missing_cash_flow_check"
       },
       {
         "node_type": "evidence",
@@ -229,9 +247,29 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
     ],
     "trace_edges": [
       {
+        "from_node_id": "agent:bull_v1",
+        "to_node_id": "arun_20260513_bull_v1_001",
+        "edge_type": "executes"
+      },
+      {
+        "from_node_id": "arun_20260513_bull_v1_001",
+        "to_node_id": "arg_20260513_bull_v1_r1_001",
+        "edge_type": "produces_argument"
+      },
+      {
         "from_node_id": "jdg_20260513_000001_001",
         "to_node_id": "arg_20260513_bull_v1_r1_001",
         "edge_type": "uses_argument"
+      },
+      {
+        "from_node_id": "arun_20260513_bull_v1_001",
+        "to_node_id": "search_request:st_20260513_gap_fill_001",
+        "edge_type": "requests_search"
+      },
+      {
+        "from_node_id": "search_request:st_20260513_gap_fill_001",
+        "to_node_id": "ev_20260513_000001_tushare_001",
+        "edge_type": "search_result"
       },
       {
         "from_node_id": "arg_20260513_bull_v1_r1_001",
@@ -254,6 +292,8 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 前端注解：
 
 - `trace` 用于展示“结论为什么这么来”的总览图。
+- `agent` 表示 Agent 实体，`agent_run` 表示一次 Debate/Judge 执行动作。
+- `search_request` 表示 workflow 搜索请求；`title` 区分初始证据采集、辩论补充搜索和 Judge 补充搜索。
 - 详情仍通过各资源详情接口查询，不建议把所有原文都塞进 trace。
 
 

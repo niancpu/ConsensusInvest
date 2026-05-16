@@ -1,4 +1,12 @@
-export type TraceNodeType = 'judgment' | 'agent_argument' | 'evidence' | 'raw_item' | 'round_summary';
+export type TraceNodeType =
+  | 'agent'
+  | 'agent_run'
+  | 'judgment'
+  | 'round_summary'
+  | 'agent_argument'
+  | 'search_request'
+  | 'evidence'
+  | 'raw_item';
 
 export type TraceEdgeType =
   | 'uses_argument'
@@ -7,7 +15,12 @@ export type TraceEdgeType =
   | 'refuted'
   | 'derived_from'
   | 'cited'
-  | 'uses_round_summary';
+  | 'uses_round_summary'
+  | 'executes'
+  | 'produces_argument'
+  | 'produces_judgment'
+  | 'requests_search'
+  | 'search_result';
 
 export type WorkflowTrace = {
   workflow_run_id: string;
