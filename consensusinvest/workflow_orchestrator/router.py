@@ -217,6 +217,8 @@ def _create_view(run: WorkflowRunRecord) -> WorkflowRunCreateView:
         created_at=_dt(run.created_at),
         events_url=f"/api/v1/workflow-runs/{run.workflow_run_id}/events",
         snapshot_url=f"/api/v1/workflow-runs/{run.workflow_run_id}/snapshot",
+        failure_code=run.failure_code,
+        failure_message=run.failure_message,
     )
 
 
@@ -246,6 +248,8 @@ def _detail_view(run: WorkflowRunRecord) -> WorkflowRunDetailView:
         created_at=_dt(run.created_at),
         started_at=_dt(run.started_at) if run.started_at else None,
         completed_at=_dt(run.completed_at) if run.completed_at else None,
+        failure_code=run.failure_code,
+        failure_message=run.failure_message,
         progress=WorkflowProgressView(
             raw_items_collected=run.progress.raw_items_collected,
             evidence_items_normalized=run.progress.evidence_items_normalized,
@@ -270,6 +274,8 @@ def _snapshot_view(snapshot: dict[str, Any]) -> WorkflowSnapshotView:
             ticker=run.ticker,
             status=run.status,
             stage=run.stage,
+            failure_code=run.failure_code,
+            failure_message=run.failure_message,
         ),
         evidence_items=[_evidence_view(item) for item in snapshot["evidence_items"]],
         agent_runs=[_agent_run_view(row) for row in snapshot["agent_runs"]],

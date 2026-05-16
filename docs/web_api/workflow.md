@@ -20,7 +20,7 @@ Content-Type: application/json
   "workflow_config_id": "mvp_bull_judge_v1",
   "query": {
     "lookback_days": 30,
-    "sources": ["akshare", "tushare", "tavily", "exa"]
+    "sources": ["akshare", "tavily", "exa"]
   },
   "options": {
     "stream": true,

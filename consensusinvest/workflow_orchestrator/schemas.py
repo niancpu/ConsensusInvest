@@ -14,7 +14,7 @@ class WorkflowModel(BaseModel):
 
 class WorkflowQueryRequest(WorkflowModel):
     lookback_days: int = 30
-    sources: list[str] = Field(default_factory=lambda: ["akshare", "tushare", "tavily", "exa"])
+    sources: list[str] = Field(default_factory=lambda: ["akshare", "tavily", "exa"])
     evidence_types: list[str] = Field(default_factory=lambda: ["financial_report", "company_news", "industry_news"])
     max_results: int = 50
 
@@ -44,6 +44,8 @@ class WorkflowRunCreateView(WorkflowModel):
     created_at: str
     events_url: str
     snapshot_url: str
+    failure_code: str | None = None
+    failure_message: str | None = None
 
 
 class WorkflowProgressView(WorkflowModel):
@@ -71,6 +73,8 @@ class WorkflowRunDetailView(WorkflowModel):
     created_at: str
     started_at: str | None = None
     completed_at: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
     progress: WorkflowProgressView
     links: WorkflowLinksView
 
@@ -175,6 +179,8 @@ class WorkflowSnapshotRunView(WorkflowModel):
     ticker: str
     status: str
     stage: str
+    failure_code: str | None = None
+    failure_message: str | None = None
 
 
 class WorkflowSnapshotView(WorkflowModel):

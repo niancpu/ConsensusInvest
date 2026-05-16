@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import GlobalNav from '../../components/GlobalNav';
 import { formatApiError } from '../../api/errors';
-import { getWorkflowRun, listWorkflowRuns, WorkflowRunListItemView } from './api';
+import { getWorkflowRun, listWorkflowRuns } from '../../api/workflow';
+import type { WorkflowRunListItemView } from '../../types/workflow';
 import './HistoryPage.css';
 
 function HistoryPage() {

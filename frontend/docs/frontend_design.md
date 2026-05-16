@@ -1,291 +1,226 @@
 # ConsensusInvest 前端设计文档
 
-本文档定义前端页面职责、数据流、实时更新策略和视觉设计边界。字段级协议以 `D:\WorkField\Projects\ConsensusInvest\docs\web_api` 与 `D:\WorkField\Projects\ConsensusInvest\docs\report_module` 为准；本文档不重复维护完整 API schema。
+本文档描述前端在 `frontend/src` 下的**实际实现**：页面拆分、路由方式、API 客户端组织、状态归属、与后端协议的对接边界。字段级协议以 `D:\WorkField\Projects\ConsensusInvest\docs\web_api` 与 `D:\WorkField\Projects\ConsensusInvest\docs\report_module` 为准；本文档不重复维护完整 API schema。
+
+> 视觉规范见 `design_skill.md`。分析页设计见 `analysis_page_design.md`。其余页面见各自的 `*_page_design.md`。
 
 ## 1. 前端定位
 
-前端不是静态展示页，也不是本地推理入口。前端只负责：
+前端只负责：
 
-- 发起主分析 workflow；
-- 订阅 workflow 实时事件；
-- 查询快照、trace、Evidence、Judgment、Report Module 视图；
-- 组织页面状态、交互和下钻路径；
-- 清楚展示数据状态、来源引用和限制说明。
+- 通过 `POST /api/v1/workflow-runs` 发起主分析；
+- 订阅 workflow SSE 事件流并按 `sequence` 幂等合并；
+- 查询 `snapshot`、`trace`、`evidence`、`agent-arguments`、`raw-items`、`round-summaries`；
+- 渲染 Report Module 的 `stocks/*`、`market/*` 聚合视图；
+- 组织页面状态、节点下钻和错误展示。
 
 前端不得：
 
 - 在本地拼装投资结论；
-- 把 Report Module 的 `report_run_id` 当成主分析 `workflow_run_id`；
-- 把 MarketSnapshot、报告摘要或行情看板等同于 Judgment；
-- 用静态假数据替代后端实时数据进入正式页面；
+- 把 Report Module 的 `report_run_id` 当作主分析 `workflow_run_id`；
+- 把 MarketSnapshot、报告摘要或行情看板等同为 Judgment；
+- 在生产页面用静态假数据替代后端数据；
 - 隐藏 `partial`、`stale`、`refreshing`、低质量来源或冲突信息。
 
-## 2. 页面地图
+## 2. 技术栈与目录
 
-| 页面 | 主要用途 | 主数据入口 | 是否实时 |
+- React 19 + TypeScript 5，Vite 6 构建；
+- 唯一第三方运行时依赖：`react`、`react-dom`、`lucide-react`；
+- 没有引入 Router、状态库、查询缓存库或 UI 框架；
+- 入口 `src/main.tsx` 渲染 `src/App.tsx`。
+
+目录结构（实际）：
+
+```text
+frontend/src
+├── App.tsx                       // 调用 useHashRoute() 分发到 5 个页面
+├── main.tsx                      // ReactDOM 入口
+├── styles.css                    // 全局样式（先锋金融终端风）
+│
+├── api/                          // 唯一 fetch 层
+│   ├── http.ts                   // withBase / apiGet / apiPost / SingleResponse / ListResponse
+│   ├── errors.ts                 // ApiRequestError + readJsonResponse + formatApiError
+│   ├── workflow.ts               // workflow-configs / workflow-runs（创建+列表+详情）/ snapshot / trace / eventStreamUrl
+│   ├── evidence.ts               // evidence / raw-items / agent-arguments / round-summaries
+│   └── report.ts                 // stocks/* + market/* + search-tasks
+│
+├── types/                        // 与后端协议对齐的纯类型
+│   ├── workflow.ts               // WorkflowStatus / Snapshot / Event / Judgment / AgentArgument / RoundSummary / RunListItemView ...
+│   ├── evidence.ts               // EvidenceDetail / RawItemDetail
+│   ├── trace.ts                  // TraceNodeType / TraceEdgeType / WorkflowTrace / TraceNode / TraceEdge / TraceGraphLayout
+│   └── report.ts                 // Stock/Market/Concept/Warning 等 Report Module 视图类型
+│
+├── router/
+│   └── index.ts                  // useHashRoute() hook：解析 #home/#analysis/#reports/#history/#details + query 参数
+│
+├── hooks/
+│   └── useWorkflowStream.ts      // SSE 订阅：onReplaying / onOpen / onMessage / onError / onParseError 回调式
+│
+├── components/
+│   └── GlobalNav.tsx             // 顶部品牌 + 主页/分析/资讯报告/历史 4 个 hash 链接
+│
+└── features/
+    ├── home/HomePage.tsx
+    ├── reports/{ReportPage.tsx, ReportPage.css}
+    ├── history/{HistoryPage.tsx, HistoryPage.css}
+    ├── details/{DetailsPage.tsx, DetailsPage.css}
+    └── analysis/                 // 4 层拆分：console / graph / inspector / utils + layout 算法
+        ├── AnalysisPage.tsx      // 状态编排：configs / runId / snapshot / trace / events / connection / selectedNode
+        ├── AnalysisPage.css
+        ├── console/
+        │   ├── AnalysisConsole.tsx
+        │   └── consoleData.ts    // SOURCE_STATUSES / AGENT_MODES 兜底 + sourceRowsFromSnapshot / agentRowsFromSnapshot
+        ├── graph/
+        │   ├── TraceGraph.tsx
+        │   ├── TraceNodeShape.tsx
+        │   └── TraceGraphEmptyState.tsx
+        ├── inspector/
+        │   ├── NodeInspector.tsx
+        │   ├── JudgmentInspector.tsx
+        │   ├── TraceInspectorEmptyState.tsx
+        │   └── types.ts          // SelectedNode 联合类型
+        ├── layout/
+        │   ├── traceGraph.ts     // layoutTraceGraph + routeTraceEdge + 边类型规整 / 标签
+        │   └── traceConstants.ts // NODE_ORDER / NODE_SIZE_BY_TYPE / NODE_TYPE_LABELS / GRAPH_LAYOUT 等
+        └── utils/
+            ├── failure.ts        // summarizeFailurePayload / friendlyFailureCode
+            └── format.ts         // formatScore / formatTime / truncate
+```
+
+## 3. 路由
+
+`src/router/index.ts` 暴露 `useHashRoute(): Route`。`Route` 包含 `name`、`hash`、`pathname`、`query`（`URLSearchParams`）。`App.tsx` 用 `switch (route.name)` 渲染对应页面，hook 内部监听 `hashchange` / `popstate`。
+
+| Hash / 路径前缀 | `route.name` | 渲染组件 | GlobalNav active |
 | --- | --- | --- | --- |
-| 首页 / 市场总览 | 展示市场概览、入口和最近任务 | Report Module `market/*`、workflow 列表摘要 | 轮询或刷新，不挂 workflow SSE |
-| 分析页面 | 针对某一只股票发起和观看多 Agent 辩论 | `POST /api/v1/workflow-runs`、`events`、`snapshot`、`trace`、`evidence`、`judgment` | 是，使用 SSE |
-| 资讯报告页面 | 展示 Report Module 生成的个股/市场报告视图 | `stocks/*`、`market/*` 报告视图接口 | 以 `data_state` 和刷新任务状态为准 |
-| 历史页面 | 回看已完成 workflow | `GET /api/v1/workflow-runs?status=completed`、`snapshot`、`trace` | 默认否；打开运行中任务时可恢复 SSE |
-| Evidence / Trace 下钻 | 审计结论来源 | workflow Evidence、Raw Item、Agent Argument、Judgment 详情 | 按需查询 |
+| 其他（含 `#home`） | `home` | `HomePage` | `home` |
+| `#analysis`、`/analysis*` | `analysis` | `AnalysisPage` | `analysis` |
+| `#reports`、`/reports*` | `reports` | `ReportPage` | `reports` |
+| `#history`、`/history*` | `history` | `HistoryPage` | `history` |
+| `#details`、`/details*` | `details` | `DetailsPage` | — |
 
-## 3. 数据原则
+约束：
 
-### 3.1 后端是事实来源
+- 当前没有 `/analysis/runs/{workflow_run_id}` 这种深层路由。`workflow_run_id` 只活在 `AnalysisPage` 组件内 state，刷新页面会丢失。`docs/web_api/overview` 推荐的 deep link 暂未落地，作为未决项保留。
+- 唯一的 query-like 参数：`#analysis?ticker=002594` —— `AnalysisPage` 在 mount 时读取 hash 中的 `ticker` 用作初值。
+- `ReportPage` 和 `HistoryPage` 也不会把 `stock_code` / `workflow_run_id` 写回 URL。
 
-所有业务数据必须来自后端 API。前端可以缓存和投影，但不能把本地状态升级为事实。
+## 4. API 客户端组织
 
-前端缓存只允许保存：
+所有 fetch 都过 `src/api/http.ts`：`apiGet` / `apiPost` 共享 `withBase` 与 `readJsonResponse`，统一解析 `data / meta / pagination / error` 外壳，统一抛 `ApiRequestError`。各域文件只声明 endpoint，不重复实现 HTTP 细节。
 
-- 请求结果缓存；
-- SSE 已处理事件序号；
-- 页面筛选条件；
-- 展开、折叠、选中节点等纯 UI 状态；
-- 开发态 fixture，且必须位于明确的 mock/fixture 目录，不进入生产数据链路。
-
-### 3.2 实时与快照分工
-
-主分析页面使用两条链路：
-
-```text
-POST /api/v1/workflow-runs
-  -> receive workflow_run_id
-  -> subscribe GET /api/v1/workflow-runs/{workflow_run_id}/events
-  -> apply SSE events by sequence
-  -> query snapshot / trace / evidence / judgment for complete state
-```
-
-SSE 是运行日志和增量结果，不是完整数据库状态。页面刷新、断线重连、历史回看必须以 `snapshot` 恢复。
-
-前端处理规则：
-
-- 按 `sequence` 幂等处理事件；
-- 记录最后处理的 `sequence`；
-- 重连时使用 `after_sequence` 或 `Last-Event-ID`；
-- 如果 `snapshot.last_event_sequence` 小于本地最后事件序号，不能用旧快照覆盖新事件状态；
-- `agent_argument_delta`、`judgment_delta` 只用于实时展示，最终结构以 completed 事件或详情接口为准。
-
-### 3.3 报告视图分工
-
-资讯报告页面走 Report Module。它可以展示事实摘要、事件、风险事项、行业信息、市场快照和引用，但不能伪装成完整 Agent 辩论。
-
-关键约束：
-
-- `GET /api/v1/stocks/{stock_code}/analysis` 是个股研究聚合视图，不启动主 workflow；
-- `report_run_id` 代表报告视图生成或缓存，不代表已完成主链路 Judgment；
-- 报告生成模式下 `workflow_run_id` 和 `judgment_id` 可以为空；
-- `data_state=partial/stale/refreshing` 必须展示给用户；
-- `refresh_task_id` 只表示后端异步刷新任务，不表示页面应阻塞等待。
-
-### 3.4 历史回看分工
-
-历史页面只回看已经存在的 workflow，不创建新结论。
-
-列表使用：
-
-```http
-GET /api/v1/workflow-runs?status=completed&limit=20&offset=0
-```
-
-详情使用：
-
-```http
-GET /api/v1/workflow-runs/{workflow_run_id}/snapshot
-GET /api/v1/workflow-runs/{workflow_run_id}/trace
-GET /api/v1/workflow-runs/{workflow_run_id}/judgment
-```
-
-如果用户打开的是 `running` 或 `queued` 状态的历史任务，页面可以恢复订阅该任务的 SSE；如果是 `completed`，默认不订阅实时事件。
-
-## 4. 分析页面设计
-
-分析页面的核心任务是展示“某一只股票的辩论过程”，不是只展示最终结论。
-
-详细页面设计见 `D:\WorkField\Projects\ConsensusInvest\frontend\docs\analysis_page_design.md`。分析页中间主图使用 `GET /api/v1/workflow-runs/{workflow_run_id}/trace` 返回的 Trace Graph；Evidence References 可以作为补充，Entity Relations 只做辅助下钻，不能替代主图。
-
-### 4.1 页面区域
-
-| 区域 | 内容 | 数据来源 |
+| 文件 | 覆盖资源 | 备注 |
 | --- | --- | --- |
-| 股票上下文栏 | 股票代码、名称、分析基准时间、workflow 状态 | workflow run、stock search/report view |
-| 发起分析面板 | 股票输入、workflow config、lookback、sources、stream 选项 | workflow configs、用户输入 |
-| 实时事件轨 | connector、Evidence、Agent、Judge 事件 | SSE events |
-| 辩论区 | Bull/Bear/其他 Agent 论点、轮次摘要、引用 Evidence | Agent Argument、Round Summary、SSE delta |
-| 证据区 | Evidence 列表、质量、来源、冲突标记 | workflow evidence |
-| Judge 区 | 最终 Judgment、置信度、风险、引用 | judgment |
-| Trace 区 | Judgment -> Argument -> Evidence -> Raw 的可审计链路 | trace |
+| `src/api/http.ts` | `withBase` / `apiGet` / `apiPost` / `SingleResponse<T>` / `ListResponse<T>` | 读取 `import.meta.env.VITE_API_BASE_URL`；唯一可注入鉴权 header、追踪 header 的位置 |
+| `src/api/errors.ts` | `ApiRequestError` / `readJsonResponse` / `formatApiError` | 把后端 `error.code` 包成异常；`formatApiError` 给出中文文案 |
+| `src/api/workflow.ts` | `listWorkflowConfigs`、`createWorkflowRun`、`listWorkflowRuns`、`getWorkflowRun`、`getWorkflowSnapshot`、`getWorkflowTrace`、`eventStreamUrl` | 历史页和分析页共享同一 workflow 客户端 |
+| `src/api/evidence.ts` | `getEvidence`、`getRawItem`、`getAgentArgument`、`getRoundSummary` | NodeInspector 下钻使用 |
+| `src/api/report.ts` | `stocks/search`、`stocks/{code}/analysis`、`industry-details`、`event-impact-ranking`、`benefits-risks`、`market/index-overview`、`market/index-intraday`、`market/stocks`、`market/concept-radar`、`market/warnings`、`search-tasks/{id}` | 所有 `refresh` 默认 `stale`，`stocks/{code}/analysis` 用 `refresh=never&latest=true` |
 
-### 4.2 创建任务
+SSE：
 
-发起分析时，前端调用：
+- `src/hooks/useWorkflowStream.ts` 封装 `EventSource` 生命周期：接收 `workflowRunId` 与 `{ onReplaying, onOpen, onMessage, onError, onParseError }`；内部覆盖 22 种事件类型（含 `snapshot`），断线时关闭并回调 `onError`，**不自动重连**。
+- 当前重订阅一律 `after_sequence=0`，前端无 `lastSequence` 持久化，依赖后端 replay 全量重放。
 
-```http
-POST /api/v1/workflow-runs
+## 5. 状态分层
+
+```
+Server Cache    → 各 useEffect / 表单提交内的 fetch；无全局缓存
+Runtime Stream  → AnalysisPage 内 useState（snapshot、trace、events、connection）
+                  + useWorkflowStream hook 推送的事件
+UI State        → 组件局部 state：ticker、selectedConfigId、selectedNode、errorMessage
 ```
 
-前端必须保存并路由到 `workflow_run_id`。推荐路由：
+约束：
+
+- `AnalysisPage` 用一个 `events: WorkflowEvent[]` 数组保存所有事件，合并时按 `event_id` 去重、按 `sequence` 排序。
+- `connection` 状态机：`idle` → `creating` → `replaying` → `open` → `error`（不会主动回到 `closed`，错误后停留在 `error` 直到用户点 `刷新快照`）。`creating` 由 `handleCreateWorkflow` 设置，其余转移由 hook 回调推动。
+- `snapshot` 加载用 `eventMode='replace_events'` 在创建任务时覆盖事件列表，用 `'merge_events'` 在终态事件回流时合并。
+- 多 tab 同时打开同一个 workflow 不会冲突，但也不会同步：每个 tab 各自维护自己的 events 数组。
+
+## 6. 与后端协议的对接边界
+
+### 6.1 通用响应外壳
+
+所有响应统一走 `data / meta / pagination / error`。`src/api/errors.ts:readJsonResponse` 解析后：
+
+- 成功 → 返回 `payload as T`（T 必须包含 `data` 字段）；
+- 失败 → 抛 `ApiRequestError`，带 `status`、`path`、`code`、`message`、`details`。
+
+调用方一般用 `formatApiError(error, fallback)` 转成中文文案：`fallback（path，HTTP 4xx，错误码：XYZ）：message`。
+
+### 6.2 实时与快照分工
+
+`AnalysisPage` 的两条链路：
 
 ```text
-/analysis/runs/{workflow_run_id}
+POST /api/v1/workflow-runs                       // 创建
+  → snapshot?include_events=true                  // 拿到首批事件 + 当前状态
+  → trace                                         // 拿到 Trace Graph
+  → useWorkflowStream(runId)                      // 订阅增量
+        ↘ workflow_failed / *_completed
+              → snapshot + trace 再拉一次（merge_events）
 ```
 
-如果用户从股票搜索进入，还可以使用：
+规则：
+
+- 收到 `workflow_failed`、`agent_argument_completed`、`round_summary_completed`、`judgment_completed`、`workflow_completed` 任一事件，触发 `loadWorkflowState(runId, 'merge_events')`，用 snapshot 校准、用 trace 替换图。
+- `snapshot.events` 里的事件以 `event_id` 去重再合并进本地 events。
+- 失败任务（`status==='failed'` 或 `stage==='failed'`）：清空 trace、清空 selectedNode、显示 `failure_message` 或 `summarizeFailurePayload(payload)` 推导的失败摘要。
+- 失败摘要按 `payload.code` 映射友好文案：`insufficient_evidence` / `agent_swarm_failed` / `judge_failed` / `evidence_acquisition_failed` / `missing_runtime_configuration`（实现见 `features/analysis/utils/failure.ts`）。
+
+### 6.3 报告视图
+
+`ReportPage` 与 `HomePage` 调用 Report Module 接口；同一个 `stock_code` 切换时并发拉 4 个聚合视图：
 
 ```text
-/analysis/new?stock_code=002594.SZ
+GET /api/v1/stocks/{code}/analysis?refresh=never&latest=true
+GET /api/v1/stocks/{code}/industry-details
+GET /api/v1/stocks/{code}/event-impact-ranking?limit=10
+GET /api/v1/stocks/{code}/benefits-risks
 ```
 
-但创建成功后必须切换到 `workflow_run_id` 路由，避免刷新页面后丢失任务身份。
+边界：
 
-### 4.3 事件渲染
+- `report_run_id` ≠ `workflow_run_id`。`ReportPage` 显示 `report_run_id` 末 8 位，但侧栏「进入主分析」按钮跳到 `#analysis?ticker=...`，不会带 `report_run_id` 过去。
+- `analysis.action` 为空时显示 neutral pill「无主链路 Judgment 时不展示投资建议」。
+- `data_state` 直接显示在 sidebar；任何 `partial/stale/refreshing` 都不阻塞主体内容。
 
-事件轨按阶段分组：
+### 6.4 历史回看
 
-- 采集：`connector_started`、`connector_progress`、`raw_item_collected`;
-- 证据：`evidence_normalized`、`evidence_structuring_started`、`evidence_structured`;
-- 辩论：`agent_run_started`、`agent_argument_delta`、`agent_argument_completed`、`round_summary_*`;
-- 裁决：`judge_started`、`judge_tool_call_*`、`judgment_delta`、`judgment_completed`;
-- 终态：`workflow_completed`、`workflow_failed`。
+`HistoryPage` 调 `src/api/workflow.ts:listWorkflowRuns` 列出最近 20 条，点击拉单个详情。当前只展示 `status`、`workflow_config_id`、`judgment_id`、`final_signal`，不拉 snapshot/trace；从详情区只能跳回 `#analysis?ticker=...`，**无法在 HistoryPage 内复现 Trace 图**。这是已知缺口（见第 9 节）。
 
-页面不能只显示最终结论；必须保留中间过程和可下钻引用。
+## 7. 错误与失败展示规则
 
-## 5. 资讯报告页面设计
+- 网络 / HTTP 错误：`formatApiError` 输出统一文案，挂到对应页面的 `errorMessage` 状态；在分析页显示在左侧控制台底部，在报告页显示在侧栏，在历史页显示在列表下方。
+- Workflow 失败：图区显示 `TraceGraphEmptyState`，标题随 `hasWorkflow / isWorkflowFailed` 切换；右侧 Inspector 用 `TraceInspectorEmptyState` 给出原因。
+- SSE 断连：`useWorkflowStream` 的 `onerror` 关闭 EventSource，置 `connection='error'`，提示用户手动「刷新快照」。**不会**自动重连（避免在 5xx 风暴时打爆后端）。
+- Report `data_state==='failed' / refreshing / pending_refresh` 由 `HomePage.getChartEmptyLabel` 等本地工具映射为中文标签，不阻塞页面。
 
-资讯报告页面面向“读报告”和“看资讯”，数据来自 Report Module。
+## 8. 视觉与交互约束（速览）
 
-推荐页面：
+完整规范见 `design_skill.md`。本仓库实际遵循：
 
-- 个股研究报告：`/reports/stocks/{stock_code}`;
-- 市场报告：`/reports/market`;
-- 概念/预警：`/reports/concepts`、`/reports/warnings`。
+- 仅四色：纯白 `#FFFFFF`、纯黑 `#000000`、克莱因蓝 `#002FA7`，以及极小面积的告警红/增长绿；
+- `border-radius: 0`、零阴影、1px 黑线 + 2px 顶部封口；
+- Trace 图节点使用 1px 黑框直角矩形、连线 90° 折线、标签等宽字体；
+- 字体三轨：Georgia 衬线（品牌/标题）、Helvetica 无衬线（UI）、等宽字体（数据，全局 CSS 用系统等宽字体回退）；
+- 动效仅使用瞬时反色和光标闪烁；
+- 全局 SVG 网格使用虚线 + 低透明度作为底噪。
 
-主要接口：
+## 9. 与早期设计的差异与未决项
 
-```http
-GET /api/v1/stocks/search?keyword={keyword}&limit=10
-GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow_run_id}&refresh=never
-GET /api/v1/stocks/{stock_code}/industry-details?workflow_run_id={workflow_run_id}
-GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_run_id}&limit=10
-GET /api/v1/stocks/{stock_code}/benefits-risks?workflow_run_id={workflow_run_id}
-GET /api/v1/market/index-overview?refresh=stale
-GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
-GET /api/v1/market/concept-radar?limit=20&refresh=stale
-GET /api/v1/market/warnings?limit=10&severity=notice&refresh=stale
-```
+差异（落地实现 ≠ 早期 `frontend_design` 草稿）：
 
-展示规则：
+- 路由：使用 hash 而非 BrowserRouter；`workflow_run_id` 不在 URL 中。
+- 分析页布局：左侧不是 Debate Rail，而是**控制台**（表单 + 数据源 + 代理模式 + 推理状态）。事件带紧贴中间 Trace 图下方，没有单独「顶部上下文栏」。
+- Trace 节点类型新增 `round_summary`；与 web_api 协议保持一致。
+- 历史页只展示摘要，没有内置 Trace / Judgment / Evidence 视图。
 
-- 所有摘要、风险、事件、行业关系必须保留可追踪 ID；
-- 没有 `judgment_id` 时，不展示“最终判断”“投资建议”“多空结论”等文案；
-- `benefits`、`risks` 中带方向性的内容只能来自主链路 Judgment 或已有 workflow；
-- `data_state` 必须放在页面明显位置；
-- `refreshing` 时展示当前可用结果和刷新状态，不阻塞页面。
+未决项：
 
-## 6. 历史页面设计
-
-历史页面用于回看已完成 workflow，重点是复现“当时如何得到这个判断”。
-
-### 6.1 列表
-
-列表字段：
-
-- `workflow_run_id`;
-- `ticker` / `stock_code`;
-- `status`;
-- `analysis_time`;
-- `workflow_config_id`;
-- `created_at`;
-- `completed_at`;
-- `final_signal`;
-- `confidence`;
-- `judgment_id`。
-
-列表只展示摘要，不展示完整链路。
-
-### 6.2 详情
-
-详情页必须展示：
-
-- workflow 基本信息；
-- Judgment；
-- Agent Argument；
-- Round Summary；
-- Evidence；
-- Trace 图；
-- Raw Item 下钻入口。
-
-历史详情不能重新解释旧结果。若用户要基于最新数据重新分析，必须创建新的 workflow。
-
-## 7. 前端状态管理
-
-推荐把状态分三层：
-
-| 状态层 | 内容 | 归属 |
-| --- | --- | --- |
-| Server Cache | API 响应、snapshot、trace、Evidence、Report view | 查询缓存 |
-| Runtime Stream | SSE 连接状态、已处理 sequence、临时 delta | workflow run 页面状态 |
-| UI State | 当前 tab、筛选、展开节点、选中 Evidence | 组件或路由状态 |
-
-硬约束：
-
-- 不能把 SSE delta 直接长期保存为最终 Judgment；
-- 不能在多个页面各自实现一套 API 外壳解析；
-- `data/meta/error` 响应外壳应由统一 API client 处理；
-- 错误展示使用 `error.code` 映射本地文案，`details` 只用于开发态或可折叠排查信息。
-
-## 8. API Client 设计
-
-建议前端实现统一客户端：
-
-```text
-src/api/http.ts
-src/api/workflow.ts
-src/api/report.ts
-src/api/evidence.ts
-src/api/agents.ts
-src/api/entities.ts
-src/api/sse.ts
-```
-
-职责：
-
-- `http.ts` 处理 base URL、`data/meta/error` 外壳、错误归一化；
-- `workflow.ts` 创建任务、查列表、详情、snapshot、trace；
-- `sse.ts` 封装 EventSource、重连、`after_sequence`、事件幂等；
-- `report.ts` 只封装 Report Module 视图接口，不创建主 workflow；
-- `evidence.ts` 封装 Evidence/Raw/Reference 查询；
-- `agents.ts` 封装 Agent Run、Argument、Round Summary、Judgment 查询。
-
-## 9. 视觉设计边界
-
-视觉风格遵循 `D:\WorkField\Projects\ConsensusInvest\frontend\docs\design_skill.md`。
-
-核心规则：
-
-- 叙事标题使用高对比衬线字体；
-- 数据、行情、AI 状态使用等宽字体；
-- UI 控件使用克制无衬线字体；
-- 数据区使用纯白底、纯黑线和克莱因蓝强调；
-- 控制台或沉浸式 AI 区可使用克莱因蓝底和白色线框；
-- 禁止阴影和圆角；
-- 使用 1px 黑/白硬边网格；
-- 图谱使用矩形节点和直角连线；
-- 动效只使用瞬时反色、光标闪烁或非常克制的状态变化。
-
-页面设计要服务于审计链路。视觉重点不应只压在首页英雄区，而要让分析页、Trace、Evidence、Report 引用在高密度信息下仍然可读。
-
-## 10. 已定取舍
-
-- 主分析和资讯报告分离。后果是同一只股票可能同时有 report view 和 workflow run，前端必须清晰标注两者身份。
-- 主分析实时过程只使用 SSE，不默认引入 WebSocket。后果是前端只能接收后端推送，暂停/恢复/多人协作等双向能力后续再设计。
-- Report Module 的 `data_state` 是页面状态的一部分。后果是报告页必须能优雅展示不完整数据，不能为了视觉完整而隐藏 partial/stale。
-- 历史页以 workflow snapshot/trace 回看，不重新计算。后果是旧结果和当前市场数据可能不一致，页面必须展示 `analysis_time`。
-- 前端不做投资解释。后果是所有方向性文案必须能追到 Agent/Judge 或已有 report 引用。
-
-## 11. 未决问题
-
-- Report Module 是否需要独立事件流入口。当前文档按 `data_state`、`refresh_task_id` 和后续查询处理。
-- 股票搜索返回的 `stock_code`、`ticker`、`entity_id` 在创建 workflow 时的优先级，需要以后端最终请求 schema 为准。
-- 首页市场概览的刷新频率需要结合后端缓存和 provider 成本确定，前端暂不自行高频轮询。
-- 历史页是否展示失败 workflow。当前优先展示 completed；失败任务可后续作为排障视图纳入。
+- 是否把 `workflow_run_id` 写进 URL（`#analysis?run=...`）以支持刷新和分享。
+- 是否在历史详情页复用 `AnalysisPage` 渲染只读 Trace。
+- SSE 断线重连、`Last-Event-ID` / `after_sequence` 是否要在前端真正实现，而不是依赖后端 replay。
+- Report Module 是否独立事件流入口，当前以 `data_state` + `refresh_task_id` 为准。
+- `src/api/http.ts` 暂未注入鉴权 header / `X-Request-Id`；接入时统一在这一层做。

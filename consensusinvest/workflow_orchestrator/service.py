@@ -74,6 +74,13 @@ class WorkflowOrchestrator:
             created_at=now,
         )
         if request.options.auto_run:
+            config_error = self._start_configuration_error(run)
+            if config_error is not None:
+                return self._mark_failed(
+                    run,
+                    "missing_runtime_configuration",
+                    config_error,
+                )
             return self.run_once(workflow_run_id)
         return run
 
@@ -87,6 +94,13 @@ class WorkflowOrchestrator:
             started_at=started_at,
         )
         self.repository.append_event(workflow_run_id, "workflow_started", {}, created_at=started_at)
+        config_error = self._start_configuration_error(run)
+        if config_error is not None:
+            return self._mark_failed(
+                run,
+                "missing_runtime_configuration",
+                config_error,
+            )
         run = self.repository.update_run(workflow_run_id, stage="evidence_selection")
         evidence_ids = self._select_evidence(run)
         if not evidence_ids:
@@ -260,6 +274,8 @@ class WorkflowOrchestrator:
 
     def trace(self, workflow_run_id: str) -> tuple[list[WorkflowTraceNode], list[WorkflowTraceEdge]]:
         run = self._required_run(workflow_run_id)
+        if run.status != "completed":
+            return [], []
         nodes: list[WorkflowTraceNode] = []
         edges: list[WorkflowTraceEdge] = []
         judgment = self.agent_swarm.repository.get_judgment_by_workflow(workflow_run_id)
@@ -477,6 +493,55 @@ class WorkflowOrchestrator:
                 continue
         return count
 
+    def _search_configuration_error(self, run: WorkflowRunRecord) -> str | None:
+        search_pool = getattr(self.acquisition, "search_pool", None)
+        unavailable_sources: tuple[str, ...] = ()
+        if search_pool is not None:
+            checker = getattr(search_pool, "unavailable_sources", None)
+            if callable(checker):
+                unavailable_sources = tuple(checker(run.query.sources))
+            else:
+                providers = getattr(search_pool, "providers", {})
+                fallback_provider = getattr(search_pool, "provider", None)
+                if fallback_provider is None:
+                    unavailable_sources = tuple(
+                        source for source in run.query.sources if source not in providers
+                    )
+        if unavailable_sources:
+            source_details = "，".join(
+                f"{source}（{_source_configuration_hint(source)}）"
+                for source in unavailable_sources
+            )
+            return (
+                "分析无法开始：当前 workflow 请求的数据源未配置或不可用："
+                f"{source_details}。"
+                "请在后端 .env 中配置对应数据源密钥，或从本次请求的 query.sources 中移除这些数据源。"
+            )
+        return None
+
+    def _start_configuration_error(self, run: WorkflowRunRecord) -> str | None:
+        errors = [
+            message
+            for message in (
+                self._search_configuration_error(run),
+                self._llm_configuration_error(),
+            )
+            if message is not None
+        ]
+        if not errors:
+            return None
+        return "\n".join(errors)
+
+    def _llm_configuration_error(self) -> str | None:
+        missing_llm_groups = _missing_llm_credential_groups(self.agent_swarm, self.judge)
+        if missing_llm_groups:
+            required = "；".join(" 或 ".join(group) for group in missing_llm_groups)
+            return (
+                "分析无法开始：Agent/Judge 模型已启用，但没有可用的模型 API key。"
+                f"请在后端 .env 中配置：{required}，然后重新运行 workflow。"
+            )
+        return None
+
     def _mark_insufficient(self, run: WorkflowRunRecord, gaps: tuple) -> WorkflowRunRecord:
         search_task_ids: list[str] = []
         for gap in gaps:
@@ -614,6 +679,39 @@ def _runtime_error_message(exc: Exception, *, stage: str) -> str:
     if "llm_empty_response" in text:
         return f"{stage} 调用模型失败：模型没有返回内容，请稍后重试或检查模型服务。"
     return f"{stage} 执行失败：{text or exc.__class__.__name__}"
+
+
+def _source_configuration_hint(source: str) -> str:
+    normalized = source.strip().lower()
+    if normalized == "tavily":
+        return "缺少 TAVILY_API_KEY"
+    if normalized == "exa":
+        return "缺少 EXA_API_KEY"
+    if normalized == "tushare":
+        return "缺少 CONSENSUSINVEST_TUSHARE_TOKEN 或 TUSHARE_TOKEN"
+    if normalized == "akshare":
+        return "AkShare provider 未启用或 akshare 包不可用"
+    return "provider 未注册"
+
+
+def _missing_llm_credential_groups(*runtimes: Any) -> tuple[tuple[str, ...], ...]:
+    groups: list[tuple[str, ...]] = []
+    for runtime in runtimes:
+        provider = getattr(runtime, "llm_provider", None)
+        if provider is None:
+            continue
+        checker = getattr(provider, "missing_credential_env_groups", None)
+        if not callable(checker):
+            continue
+        groups.extend(tuple(group) for group in checker())
+    result: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
+    for group in groups:
+        if group in seen:
+            continue
+        seen.add(group)
+        result.append(group)
+    return tuple(result)
 
 
 def _is_missing_llm_credentials(text: str) -> bool:

@@ -23,7 +23,7 @@ def load_local_env(path: str | Path | None = None, *, override: bool = False) ->
         if parsed is None:
             continue
         key, value = parsed
-        if override or key not in os.environ:
+        if override or not os.environ.get(key, "").strip():
             os.environ[key] = value
             loaded[key] = value
     return loaded

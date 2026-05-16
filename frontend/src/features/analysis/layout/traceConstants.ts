@@ -1,0 +1,53 @@
+import type { TraceNodeType } from '../../../types/trace';
+
+export const NODE_SIZE_BY_TYPE: Record<TraceNodeType, { width: number; height: number }> = {
+  judgment: { width: 150, height: 72 },
+  agent_argument: { width: 150, height: 66 },
+  round_summary: { width: 150, height: 66 },
+  evidence: { width: 118, height: 54 },
+  raw_item: { width: 118, height: 54 },
+};
+
+export const TITLE_LENGTH_BY_TYPE: Record<TraceNodeType, number> = {
+  judgment: 10,
+  round_summary: 10,
+  agent_argument: 9,
+  evidence: 6,
+  raw_item: 6,
+};
+
+export const SUMMARY_LENGTH_BY_TYPE: Record<TraceNodeType, number> = {
+  judgment: 9,
+  round_summary: 9,
+  agent_argument: 8,
+  evidence: 5,
+  raw_item: 5,
+};
+
+export const GRAPH_LAYOUT = {
+  minWidth: 780,
+  minHeight: 620,
+  topPadding: 42,
+  sidePadding: 40,
+  bottomPadding: 48,
+  rowGap: 126,
+  minNodeGap: 28,
+  edgeLaneGap: 8,
+  maxEdgeLanes: 9,
+};
+
+export const NODE_ORDER: TraceNodeType[] = [
+  'judgment',
+  'round_summary',
+  'agent_argument',
+  'evidence',
+  'raw_item',
+];
+
+export const NODE_TYPE_LABELS: Record<TraceNodeType, string> = {
+  judgment: '最终判断',
+  round_summary: '本轮辩论',
+  agent_argument: '代理论证',
+  evidence: '证据',
+  raw_item: '原始数据',
+};

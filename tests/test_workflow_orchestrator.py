@@ -25,6 +25,14 @@ class RaisingSwarm:
         )
 
 
+class FakeLLMProvider:
+    def missing_credential_env_groups(self):
+        return (("OPENAI_API_KEY",),)
+
+    def complete_json(self, **kwargs):
+        raise AssertionError("preflight should stop before model calls")
+
+
 def _analysis_time() -> datetime:
     return datetime(2026, 5, 13, 10, 0, tzinfo=timezone.utc)
 
@@ -207,6 +215,115 @@ def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> 
     events = [event.event_type for event in service.list_events(run.workflow_run_id)]
     assert "connector_started" in events
     assert "agent_argument_completed" in events
+
+
+def test_workflow_orchestrator_fails_fast_when_requested_search_source_is_unconfigured() -> None:
+    store = FakeEvidenceStoreClient()
+    search_pool = SearchAgentPool(providers={}, evidence_store=store)
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+    )
+
+    run = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=True),
+        )
+    )
+
+    assert run.status == "failed"
+    assert run.failure_code == "missing_runtime_configuration"
+    assert "tavily" in (run.failure_message or "")
+    assert "TAVILY_API_KEY" in (run.failure_message or "")
+    assert "数据源未配置" in (run.failure_message or "")
+    events = service.list_events(run.workflow_run_id)
+    assert events[-1].event_type == "workflow_failed"
+    assert events[-1].payload["code"] == "missing_runtime_configuration"
+    assert "connector_started" not in [event.event_type for event in events]
+    assert not run.search_task_ids
+
+
+def test_workflow_orchestrator_reports_missing_key_even_when_evidence_exists() -> None:
+    store = FakeEvidenceStoreClient()
+    repository = InMemoryWorkflowRepository()
+    agent_swarm = AgentSwarmRuntime(evidence_store=store)
+    service = WorkflowOrchestrator(
+        repository=repository,
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(
+            search_pool=SearchAgentPool(providers={}, evidence_store=store)
+        ),
+    )
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    _seed_store(queued.workflow_run_id, store)
+
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "failed"
+    assert run.failure_code == "missing_runtime_configuration"
+    assert "TAVILY_API_KEY" in (run.failure_message or "")
+    events = service.list_events(run.workflow_run_id)
+    event_types = [event.event_type for event in events]
+    assert "agent_argument_completed" not in event_types
+    assert "workflow_failed" == event_types[-1]
+    nodes, edges = service.trace(run.workflow_run_id)
+    assert nodes == []
+    assert edges == []
+
+
+def test_workflow_orchestrator_fails_fast_when_model_key_is_missing() -> None:
+    store = FakeEvidenceStoreClient()
+    agent_swarm = AgentSwarmRuntime(evidence_store=store, llm_provider=FakeLLMProvider())
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(
+            evidence_store=store,
+            repository=agent_swarm.repository,
+            llm_provider=FakeLLMProvider(),
+        ),
+        acquisition=EvidenceAcquisitionService(
+            search_pool=SearchAgentPool(
+                providers={"tavily": MockSearchProvider()},
+                evidence_store=store,
+            )
+        ),
+    )
+
+    run = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=True),
+        )
+    )
+
+    assert run.status == "failed"
+    assert run.failure_code == "missing_runtime_configuration"
+    assert "模型 API key" in (run.failure_message or "")
+    assert "OPENAI_API_KEY" in (run.failure_message or "")
 
 
 def test_workflow_orchestrator_marks_agent_runtime_error_as_workflow_failed() -> None:

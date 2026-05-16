@@ -229,6 +229,7 @@
 .graph-board {
   min-height: 0;
   border: 0;
+  overflow: auto;
 }
 
 .trace-empty-state {
@@ -262,8 +263,9 @@
 
 .trace-graph {
   display: block;
-  width: 100%;
-  height: 100%;
+  width: auto;
+  height: auto;
+  min-width: 100%;
   min-height: 620px;
 }
 
@@ -308,7 +310,7 @@
 .trace-edge text {
   fill: var(--analysis-blue);
   font-family: "Courier New", monospace;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
   text-anchor: middle;
 }
@@ -317,10 +319,15 @@
   cursor: pointer;
 }
 
+.trace-node {
+  outline: none;
+}
+
 .trace-node rect {
   fill: var(--analysis-white);
   stroke: var(--analysis-black);
   stroke-width: 2;
+  vector-effect: non-scaling-stroke;
 }
 
 .trace-node.judgment rect {
@@ -329,11 +336,18 @@
 }
 
 .trace-node.interactive:hover rect,
-.trace-node.interactive:focus-visible rect,
-.trace-node.selected rect {
+.trace-node.interactive:focus-visible rect {
   stroke: var(--analysis-blue);
-  stroke-width: 3;
-  outline: none;
+}
+
+.trace-node.selected rect {
+  fill: var(--analysis-blue);
+  stroke: var(--analysis-blue);
+}
+
+.trace-node.selected .node-title,
+.trace-node.selected .node-subtitle {
+  fill: var(--analysis-white);
 }
 
 .trace-node text {
@@ -343,15 +357,29 @@
 .node-title {
   fill: var(--analysis-black);
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 24px;
+  font-size: 18px;
   font-weight: 800;
 }
 
 .node-subtitle {
   fill: var(--analysis-black);
   font-family: "Courier New", monospace;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
+}
+
+.trace-node.judgment .node-title {
+  font-size: 22px;
+}
+
+.trace-node.evidence .node-title,
+.trace-node.raw_item .node-title {
+  font-size: 14px;
+}
+
+.trace-node.evidence .node-subtitle,
+.trace-node.raw_item .node-subtitle {
+  font-size: 9px;
 }
 
 .trace-node.judgment text {
@@ -449,6 +477,26 @@
   margin: 0;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.description-item p.long-text {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.description-item .payload-block {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--analysis-black);
+  background: var(--analysis-white);
+  border: 1px solid var(--analysis-black);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .legend-panel {

@@ -26,7 +26,7 @@ WorkflowStage = Literal[
 @dataclass(frozen=True, slots=True)
 class WorkflowQuery:
     lookback_days: int = 30
-    sources: tuple[str, ...] = ("akshare", "tushare", "tavily", "exa")
+    sources: tuple[str, ...] = ("akshare", "tavily", "exa")
     evidence_types: tuple[str, ...] = ("financial_report", "company_news", "industry_news")
     max_results: int = 50
 

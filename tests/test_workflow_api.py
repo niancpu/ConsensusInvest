@@ -172,6 +172,36 @@ def test_workflow_api_create_defaults_to_queued_without_autorun() -> None:
     assert data["started_at"] is None
 
 
+def test_workflow_api_auto_run_returns_failed_payload_when_key_is_missing() -> None:
+    client = TestClient(create_app())
+    runtime = client.app.state.runtime
+    runtime.workflow_service.acquisition = EvidenceAcquisitionService(
+        search_pool=SearchAgentPool(providers={}, evidence_store=runtime.evidence_store)
+    )
+
+    response = client.post(
+        "/api/v1/workflow-runs",
+        json={
+            "ticker": "002594",
+            "analysis_time": "2026-05-13T10:00:00+00:00",
+            "workflow_config_id": "mvp_bull_judge_v1",
+            "query": {"lookback_days": 30, "sources": ["tavily"]},
+            "options": {"stream": True, "include_raw_payload": False, "auto_run": True},
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    created = response.json()["data"]
+    assert created["status"] == "failed"
+    assert created["failure_code"] == "missing_runtime_configuration"
+    assert "TAVILY_API_KEY" in created["failure_message"]
+
+    events = client.get(created["events_url"])
+    assert events.status_code == 200, events.text
+    assert "event: workflow_failed" in events.text
+    assert "event: connector_started" not in events.text
+
+
 def test_workflow_api_snapshot_projects_judge_tool_calls_and_events() -> None:
     client = TestClient(create_app())
     runtime = client.app.state.runtime

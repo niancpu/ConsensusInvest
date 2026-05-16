@@ -24,7 +24,7 @@ from consensusinvest.workflow_orchestrator import (
 )
 
 
-def test_load_local_env_reads_utf8_values_without_overriding_existing_env(tmp_path, monkeypatch):
+def test_load_local_env_reads_utf8_values_and_fills_empty_process_env(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -39,7 +39,7 @@ def test_load_local_env_reads_utf8_values_without_overriding_existing_env(tmp_pa
         encoding="utf-8",
     )
     monkeypatch.setenv("TAVILY_API_KEY", "from_process")
-    monkeypatch.delenv("EXA_API_KEY", raising=False)
+    monkeypatch.setenv("EXA_API_KEY", "")
     monkeypatch.delenv("CONSENSUSINVEST_HOST", raising=False)
     monkeypatch.delenv("CONSENSUSINVEST_EXA_SEARCH_TYPE", raising=False)
 
@@ -89,6 +89,7 @@ def test_agent_llm_provider_env_factory(monkeypatch):
     monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", "openai/gpt-4.1-mini")
     monkeypatch.setenv("CONSENSUSINVEST_SWARM_MODEL", "openai/gpt-4.1")
     monkeypatch.setenv("CONSENSUSINVEST_JUDGE_MODEL", "openai/gpt-4.1")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_BASE_URL", "https://relay.example.com/v1")
     monkeypatch.setenv("CONSENSUSINVEST_LLM_TEMPERATURE", "0.1")
     provider = build_agent_llm_provider_from_env()
 
@@ -96,7 +97,164 @@ def test_agent_llm_provider_env_factory(monkeypatch):
     assert provider.model == "openai/gpt-4.1-mini"
     assert provider.model_for("agent_argument") == "openai/gpt-4.1"
     assert provider.model_for("judge") == "openai/gpt-4.1"
+    assert provider.base_url == "https://relay.example.com/v1"
     assert provider.temperature == 0.1
+
+
+@pytest.mark.parametrize(
+    ("model", "base_url"),
+    [
+        ("anthropic/claude-sonnet-4-5", "https://anthropic-relay.example.com"),
+        ("gemini/gemini-2.5-flash", "https://gemini-relay.example.com"),
+    ],
+)
+def test_agent_llm_provider_base_url_supports_litellm_providers(
+    monkeypatch, model, base_url
+):
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", model)
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_BASE_URL", base_url)
+
+    provider = build_agent_llm_provider_from_env()
+
+    assert isinstance(provider, LiteLLMAgentProvider)
+    assert provider.model == model
+    assert provider.base_url == base_url
+
+
+@pytest.mark.parametrize(
+    ("env_name", "base_url"),
+    [
+        ("OPENAI_BASE_URL", "https://openai-relay.example.com/v1"),
+        ("OPENAI_API_BASE", "https://openai-api-base.example.com/v1"),
+        ("ANTHROPIC_API_BASE", "https://anthropic-relay.example.com"),
+        ("GEMINI_API_BASE", "https://gemini-relay.example.com"),
+    ],
+)
+def test_agent_llm_provider_accepts_provider_specific_base_url_envs(
+    monkeypatch, env_name, base_url
+):
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("CONSENSUSINVEST_LLM_MODEL", "openai/gpt-4.1-mini")
+    for name in (
+        "CONSENSUSINVEST_LLM_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "ANTHROPIC_API_BASE",
+        "GEMINI_API_BASE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(env_name, base_url)
+
+    provider = build_agent_llm_provider_from_env()
+
+    assert isinstance(provider, LiteLLMAgentProvider)
+    assert provider.base_url == base_url
+
+
+def test_litellm_provider_passes_api_key_and_base_url(monkeypatch):
+    captured = {}
+
+    def fake_completion(**kwargs):
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    provider = LiteLLMAgentProvider(
+        model="openai/grok-4.20-fast",
+        base_url="https://relay.example.com/v1",
+    )
+
+    result = provider.complete_json(
+        purpose="agent_argument",
+        system_prompt="Return JSON.",
+        user_payload={"input": "x"},
+    )
+
+    assert result == {"ok": True}
+    assert captured["model"] == "openai/grok-4.20-fast"
+    assert captured["api_key"] == "test-openai-key"
+    assert captured["base_url"] == "https://relay.example.com/v1"
+    assert captured["stream"] is False
+
+
+def test_litellm_provider_recovers_sse_content_from_proxy_error(monkeypatch):
+    def fake_completion(**kwargs):
+        raise RuntimeError(
+            "OpenAIException - Empty or invalid response from LLM endpoint. "
+            "Received: 'data: {\"choices\":[{\"delta\":{\"content\":\"{\\\\\\\"ok\\\\\\\":\"}}]}\\n\\n"
+            "data: {\"choices\":[{\"delta\":{\"content\":\" true}\"}}]}\\n\\n"
+            "data: [DONE]\\n\\n'"
+        )
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    provider = LiteLLMAgentProvider(
+        model="openai/grok-4.20-fast",
+        base_url="https://relay.example.com/v1",
+    )
+
+    result = provider.complete_json(
+        purpose="agent_argument",
+        system_prompt="Return JSON.",
+        user_payload={"input": "x"},
+    )
+
+    assert result == {"ok": True}
+
+
+def test_litellm_provider_recovers_escaped_sse_from_wrapped_proxy_error(monkeypatch):
+    def fake_completion(**kwargs):
+        raise RuntimeError(
+            'litellm.InternalServerError: OpenAIException - Empty or invalid response. '
+            'Received: \\u0027data: {\\"choices\\":[{\\"delta\\":{\\"content\\":\\"{\\\\\\\\n\\"}}]}\\n\\n'
+            'data: {\\"choices\\":[{\\"delta\\":{\\"content\\":\\"  \\\\\\\\\\\\\\"ok\\\\\\\\\\\\\\": true\\\\\\\\n\\"}}]}\\n\\n'
+            'data: {\\"choices\\":[{\\"delta\\":{\\"content\\":\\"}\\"}}]}\\n\\n'
+            'data: [DONE]\\n\\n\\u0027. Check the reverse proxy.'
+        )
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    provider = LiteLLMAgentProvider(
+        model="openai/grok-4.20-fast",
+        base_url="https://relay.example.com/v1",
+    )
+
+    result = provider.complete_json(
+        purpose="agent_argument",
+        system_prompt="Return JSON.",
+        user_payload={"input": "x"},
+    )
+
+    assert result == {"ok": True}
+
+
+def test_litellm_provider_rejects_missing_key_before_litellm(monkeypatch):
+    def fake_completion(**kwargs):
+        raise AssertionError("provider should fail before calling LiteLLM")
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    provider = LiteLLMAgentProvider(
+        model="openai/grok-4.20-fast",
+        base_url="https://relay.example.com/v1",
+    )
+
+    with pytest.raises(RuntimeError, match="llm_missing_credentials"):
+        provider.complete_json(
+            purpose="agent_argument",
+            system_prompt="Return JSON.",
+            user_payload={"input": "x"},
+        )
 
 
 def test_evidence_store_env_factory_requires_sqlite_path(monkeypatch):
@@ -148,7 +306,7 @@ def test_build_runtime_uses_sqlite_state_repositories_by_default(tmp_path, monke
     monkeypatch.setenv("CONSENSUSINVEST_EVIDENCE_STORE_BACKEND", "sqlite")
     monkeypatch.setenv("CONSENSUSINVEST_EVIDENCE_DB_PATH", str(tmp_path / "evidence.sqlite3"))
     monkeypatch.setenv("CONSENSUSINVEST_RUNTIME_DB_PATH", str(tmp_path / "runtime.sqlite3"))
-    monkeypatch.delenv("CONSENSUSINVEST_ALLOW_IN_MEMORY_RUNTIME", raising=False)
+    monkeypatch.setenv("CONSENSUSINVEST_ALLOW_IN_MEMORY_RUNTIME", "0")
 
     runtime = build_runtime()
 

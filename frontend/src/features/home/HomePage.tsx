@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  IndexIntraday,
-  IndexOverview,
-  MarketStocksList,
-  SearchTaskStatusView,
   getIndexIntraday,
   getIndexOverview,
   getMarketStocks,
   getSearchTaskStatus,
 } from '../../api/report';
+import type {
+  IndexIntraday,
+  IndexOverview,
+  MarketStocksList,
+  SearchTaskStatusView,
+} from '../../types/report';
 import { formatApiError } from '../../api/errors';
 import GlobalNav from '../../components/GlobalNav';
 

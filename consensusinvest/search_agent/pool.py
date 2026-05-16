@@ -458,6 +458,11 @@ class SearchAgentPool:
             return self.provider
         raise RuntimeError(f"missing search provider for source: {source}")
 
+    def unavailable_sources(self, sources: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        if self.provider is not None:
+            return ()
+        return tuple(source for source in sources if source not in self.providers)
+
 
 def _final_status(success_count: int, failure_count: int) -> SearchTaskStatus:
     if success_count > 0 and failure_count > 0:

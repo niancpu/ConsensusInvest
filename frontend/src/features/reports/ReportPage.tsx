@@ -1,13 +1,5 @@
 import { FormEvent, type ReactNode, useEffect, useState } from 'react';
 import {
-  BenefitsRisksView,
-  ConceptRadarItem,
-  EventImpactRankingView,
-  IndexOverview,
-  IndustryDetailsView,
-  MarketWarning,
-  StockAnalysisView,
-  StockSearchHit,
   getBenefitsRisks,
   getConceptRadar,
   getEventImpactRanking,
@@ -17,6 +9,16 @@ import {
   getStockAnalysis,
   searchStocks,
 } from '../../api/report';
+import type {
+  BenefitsRisksView,
+  ConceptRadarItem,
+  EventImpactRankingView,
+  IndexOverview,
+  IndustryDetailsView,
+  MarketWarning,
+  StockAnalysisView,
+  StockSearchHit,
+} from '../../types/report';
 import { formatApiError } from '../../api/errors';
 import GlobalNav from '../../components/GlobalNav';
 import './ReportPage.css';

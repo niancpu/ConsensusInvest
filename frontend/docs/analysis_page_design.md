@@ -1,10 +1,42 @@
 # 分析页面设计
 
-本文档只定义主分析页面。该页面用于围绕某一只股票展示完整 workflow、Agent 辩论、Judge 裁决和可审计图谱。
+本文档描述 `frontend/src/features/analysis/` 的**实际页面结构、数据流和节点交互**。完整字段协议见 `docs/web_api/workflow.md`。
+
+## 0. 文件结构（4 层拆分）
+
+```text
+features/analysis
+├── AnalysisPage.tsx              // 编排：state + handler + 渲染外壳；不放 UI 子结构
+├── AnalysisPage.css
+├── console/
+│   ├── AnalysisConsole.tsx       // 左侧控制台整列
+│   └── consoleData.ts            // 兜底静态数据 + sourceRowsFromSnapshot / agentRowsFromSnapshot
+├── graph/
+│   ├── TraceGraph.tsx            // SVG 主图（grid / edges / nodes）
+│   ├── TraceNodeShape.tsx        // 单节点：rect + title + subtitle，交互/选中态
+│   └── TraceGraphEmptyState.tsx  // 4 种空状态文案
+├── inspector/
+│   ├── NodeInspector.tsx         // 5 种节点的中文 description-list
+│   ├── JudgmentInspector.tsx     // judgment 默认视图
+│   ├── TraceInspectorEmptyState.tsx
+│   └── types.ts                  // SelectedNode 联合类型
+├── layout/
+│   ├── traceGraph.ts             // layoutTraceGraph + routeTraceEdge + 标签/类型规整
+│   └── traceConstants.ts         // NODE_ORDER / NODE_SIZE_BY_TYPE / NODE_TYPE_LABELS / GRAPH_LAYOUT
+└── utils/
+    ├── failure.ts                // summarizeFailurePayload + friendlyFailureCode
+    └── format.ts                 // formatScore / formatTime / truncate
+```
+
+SSE 订阅、API 调用、类型定义不在本目录：
+
+- 事件流走 `src/hooks/useWorkflowStream.ts`；
+- workflow / evidence / round-summary 接口走 `src/api/workflow.ts` + `src/api/evidence.ts`；
+- `WorkflowSnapshot` / `WorkflowEvent` / `WorkflowTrace` / `TraceNode` / `TraceEdge` / `Judgment` / `AgentArgument` / `RoundSummary` / `EvidenceDetail` / `RawItemDetail` 等类型在 `src/types/{workflow,evidence,trace}.ts`。
 
 ## 1. 页面判断
 
-分析页中间必须放一张主图，但这张图不是普通知识图谱，也不是报告关系图。
+分析页中间放一张图，但这张图不是知识图谱，也不是报告关系图。
 
 主图使用后端主 workflow 的 Trace Graph：
 
@@ -12,313 +44,262 @@
 GET /api/v1/workflow-runs/{workflow_run_id}/trace
 ```
 
-核心字段：
+节点类型（与 `layout/traceGraph.ts` 对齐）：
 
-- `trace_nodes`;
-- `trace_edges`;
-- `node_type`: `judgment`、`agent_argument`、`evidence`、`raw_item`;
-- `edge_type`: `uses_argument`、`supports`、`counters`、`derived_from` 等。
+- `judgment`
+- `round_summary`
+- `agent_argument`
+- `evidence`
+- `raw_item`
 
-取舍：
+边类型（与 `types/trace.ts:TraceEdgeType` 对齐）：
 
-- 主图优先回答“这个判断为什么成立”。
-- Evidence References 图可以作为主图的数据补充，用于展示 Agent/Judge 对 Evidence 的引用强度和角色。
-- Entity Relations 图只回答实体关系，例如公司、行业、政策、事件之间的关系；它不能放在分析页中心替代 Trace Graph。
+- `uses_argument`
+- `supports`
+- `counters`
+- `refuted`
+- `derived_from`
+- `cited`
+- `uses_round_summary`
+
+`layout/traceGraph.ts:layoutTraceGraph` 把节点按 `judgment → round_summary → agent_argument → evidence → raw_item` 分行，把不在该枚举内的 edge_type 归一为 `cited`，连线统一走 `routeTraceEdge` 生成的 90° 折线。
 
 ## 2. 总体布局
 
-分析页采用三栏一底结构：
+实际采用三栏布局（CSS 见 `AnalysisPage.css`，整体宽度为 grid，左 / 中 / 右三列）：
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ Stock Context / Workflow Status / Actions                    │
-├──────────────┬─────────────────────────────┬─────────────────┤
-│ Debate Rail  │ Trace Graph Canvas           │ Inspector       │
-│              │                             │                 │
-│ Bull / Bear  │ Judgment -> Arguments        │ Selected Node   │
-│ Rounds       │ -> Evidence -> Raw           │ Evidence / Raw  │
-│ Agent State  │                             │ Details         │
-├──────────────┴─────────────────────────────┴─────────────────┤
-│ Runtime Event Tape                                             │
-└──────────────────────────────────────────────────────────────┘
+│ GlobalNav (主页 / 分析 / 资讯报告 / 历史)                     │
+├────────────┬─────────────────────────────┬───────────────────┤
+│ Console    │ Workspace                   │ Inspector         │
+│            │                             │                   │
+│ 股票表单    │ 判断溯源图（SVG）             │ 节点说明           │
+│ 刷新快照    │  - judgment                  │  - judgment       │
+│ Quote Strip│  - round_summary             │  - agent_argument │
+│ 数据源状态  │  - agent_argument            │  - evidence       │
+│ 代理模式    │  - evidence                  │  - raw_item       │
+│ 推理状态    │  - raw_item                  │                   │
+│ 错误 banner│                             │ 图例              │
+│            │ 运行事件（最近 8 条）          │                   │
+└────────────┴─────────────────────────────┴───────────────────┘
 ```
 
-页面优先级：
+设计取舍（与早期草稿的区别）：
 
-1. 中间主图：Trace Graph。
-2. 左侧辩论轨：Agent 轮次和立场。
-3. 右侧详情面板：当前选中节点的证据、原文、论点或 Judgment。
-4. 底部事件带：运行过程和错误状态。
+- 没有独立的「顶部 Stock Context」栏。`ticker` / `status` / `stage` / `events` / `conn` / `run` 全部压在左侧 Console 的 `quote-strip` 里。
+- 左栏不是 Debate Rail（按 Agent 分组的轮次列表），而是**控制台 + 状态面板**。Bull/Bear 等代理状态来自 `snapshot.agent_runs`，不是单独建模的 rail。
+- 「Runtime Event Tape」从全宽底部带改成贴在 Trace 图下方的 `timeline-panel`，只显示最近 8 条事件。
 
-## 3. 顶部上下文栏
+## 3. 左侧 Console（`console/AnalysisConsole.tsx`）
 
-顶部栏展示当前分析对象和 workflow 身份。
+`analysis-console` 内自上而下包含 5 个 `console-block`：
 
-必须展示：
+1. **股票代码 + Workflow + 开始分析按钮**：表单提交触发 `handleCreateWorkflow`。`workflow_config_id` 来自 `GET /api/v1/workflow-configs`，无配置时回退到 `mvp_bull_judge_v1`。
+2. **刷新快照 + Quote Strip**：`刷新快照` 调用 `loadWorkflowState(runId, 'merge_events')`。Strip 显示 `ticker / status / stage / events / conn / run（取 workflow_run_id 末 8 位）`。
+3. **数据源状态**：默认显示 `SOURCE_STATUSES` 静态行；有 `snapshot` 时改为 `sourceRowsFromSnapshot` 按 `evidence_items.source` 聚合的真实计数。
+4. **代理模式**：默认显示 `AGENT_MODES`；有 `snapshot` 时改为 `agentRowsFromSnapshot`（即 `agent_runs.map(run => [run.agent_id, run.status])`）。
+5. **推理状态**：`Evidence / Argument / Round Summary / Tool Call` 计数，分别取 `snapshot.evidence_items / agent_arguments / round_summaries / judge_tool_calls` 长度。
 
-- 股票代码 / 股票名称；
-- `workflow_run_id`;
-- `status`;
-- `stage`;
-- `analysis_time`;
-- `workflow_config_id`;
-- SSE 连接状态；
-- 最新事件序号；
-- 创建新分析按钮；
-- 打开历史按钮。
+底部：
 
-规则：
+- `errorMessage` → `error-banner`；
+- `console-footer` 显示 `latestStatus` + `API v1`。
 
-- `analysis_time` 必须显眼，避免用户把旧分析误认为实时结论。
-- `workflow_run_id` 可折叠，但要能复制。
-- 如果当前页面没有 `workflow_run_id`，只能停留在创建态，不能展示 Judgment。
+## 4. 中间 Workspace
 
-## 4. 中间 Trace Graph
+### 4.1 Trace Graph SVG（`graph/TraceGraph.tsx` + `graph/TraceNodeShape.tsx`）
 
-页面主图命名为“判断溯源图”，也可在说明文案中称为“推理链路图”。该命名用于强调数据来自 workflow trace，而不是实体知识图谱。
+- 画布尺寸来自 `layout/traceGraph.ts:layoutTraceGraph`，最小宽度 780px，并按最拥挤层级的节点数量横向扩展；
+- 背景 `<pattern id="grid">` 1px 黑虚线 62×62 网格；
+- 节点：`TraceNodeShape` 渲染矩形 + 中心标题 + 子标题（`node_type` + `score`）；只有 `traceNodeIds` 集合（来自后端 trace）内的节点 `isInteractive=true`，可点击 / 键盘 Enter / Space 触发；
+- 边：`polyline` + 中间 `rect` 背景框 + 等宽字体 `text` 标签（标签由 `labelForEdge` 给出 `arg / sup / ctr / ref / raw / sum / cite`）。
 
-### 4.1 节点类型
+布局算法 `layout/traceGraph.ts:layoutTraceGraph`：
 
-| 节点类型 | 展示名称 | 视觉层级 | 点击后右侧面板 |
+- 按 `judgment → round_summary → agent_argument → evidence → raw_item` 顺序分行；
+- 行间距 126px，行高基于 `NODE_SIZE_BY_TYPE`；
+- 每行内按实际画布宽度等分，Evidence / Raw Item 使用更紧凑节点与更短标题，画布溢出时由 `graph-board` 横向滚动；
+- 边路由 `routeTraceEdge`：同行 → 走带上下 lane 的 90° 折线；跨行 → 走「V-H-V」并按相邻层级分配 lane，错开水平段和节点连接点，避免大量边重叠在同一通道。
+
+### 4.2 空状态（`graph/TraceGraphEmptyState.tsx`）
+
+`TraceGraphEmptyState` 处理 4 种情况：
+
+| `hasWorkflow` | `isWorkflowFailed` | 渲染标题 | 说明 |
 | --- | --- | --- | --- |
-| `judgment` | Judge | 最高层，放顶部或最右终点 | Judgment 摘要、置信度、风险、引用 |
-| `agent_argument` | Agent Argument | 中间层，按 Agent 和轮次分组 | 论点正文、Agent、轮次、引用 Evidence |
-| `evidence` | Evidence | 事实层，按来源或类型分组 | Evidence 结构、质量、来源、冲突标记 |
-| `raw_item` | Raw Item | 原始层，放底部或最左来源层 | 原始来源、抓取时间、payload 下钻入口 |
+| false | — | 需要先创建 workflow | 不展示假图或实体知识图谱 |
+| true | false（trace 未到） | 等待 workflow trace | 显示当前 `status / stage` |
+| true | true | workflow 已失败，未生成 trace | 显示 `failureSummary` 或 `errorMessage` |
 
-视觉编码：
+`isWorkflowFailed` 取 `status === 'failed'` 或 `stage === 'failed'`。
 
-- `judgment` 使用克莱因蓝底、白字；
-- `agent_argument` 使用白底、黑框、Agent 标签；
-- `evidence` 使用白底、克莱因蓝左边线；
-- `raw_item` 使用白底、等宽小字号；
-- 低质量或冲突 Evidence 只用极小红色标记，不大面积染色。
+### 4.3 运行事件 timeline-panel
 
-### 4.2 边类型
+- 取 `events.slice(-8)`；
+- 每行 `sequence + event_type + 本地化时间`；
+- 没有事件时显示「尚未创建分析任务」。
 
-| 边类型 | 含义 | 展示 |
+## 5. 右侧 Inspector
+
+### 5.1 节点说明（顶部 `inspector-panel`，`inspector/*`）
+
+按优先级渲染：
+
+1. `selectedNode` 存在 → `inspector/NodeInspector.tsx`；
+2. 否则 `judgment` 存在 → `inspector/JudgmentInspector.tsx`；
+3. 否则 `inspector/TraceInspectorEmptyState.tsx`。
+
+### 5.2 NodeInspector
+
+每种节点类型都用**中文标签**渲染 description-list，顶部固定一项「{NODE_TYPE_LABELS[node.node_type]}」+ `summary`（`NODE_TYPE_LABELS` 在 `layout/traceConstants.ts`）：
+
+- `agent_argument`：代理身份（`agent_id · role · 第 N 轮`）/ 论证内容（`argument` 全文）/ 置信度 / 支持证据 / 反驳证据 / 已声明局限；
+- `round_summary`：轮次 / 本轮摘要 / 参与代理 / 该轮论证 ID 列表（提示用户点击图上对应节点查看正文）/ 引用证据 / 争议证据；
+- `evidence`：来源（`source · source_type`）/ 标题（可选）/ 客观摘要（`objective_summary || content`）/ 质量评分（来源 / 相关性 / 结构化置信度）/ 原始数据引用；
+- `raw_item`：来源 / 标题（可选）/ 链接（可选）/ 原始内容（`truncate(content, 360)`）/ 原始 Payload 节选（`<pre class="payload-block">` 渲染 `JSON.stringify(raw_payload, null, 2)`，截断 480 字符，最高 220px 滚动）/ 派生证据；
+- `judgment`：只渲染顶部一项；详情由 `JudgmentInspector` 接管。
+
+`NODE_TYPE_LABELS` 映射：`judgment→最终判断 / round_summary→本轮辩论 / agent_argument→代理论证 / evidence→证据 / raw_item→原始数据`。
+
+`detail` 字段通过点击节点时按需拉取（接口实现在 `src/api/evidence.ts`，类型在 `src/types/`）：
+
+| 类型 | 接口函数 | URL |
 | --- | --- | --- |
-| `uses_argument` | Judgment 使用某个 Agent 论点 | 黑色直角线 |
-| `supports` | 论点引用 Evidence 作为支持 | 克莱因蓝直角线 |
-| `counters` / `refuted` | 反驳或削弱 | 红色短标记 + 黑色直角线 |
-| `derived_from` | Evidence 来自 Raw Item | 黑色细线 |
-| `cited` | 仅引用 | 灰度不可用；使用黑色虚线或细线标签 |
+| `evidence` | `getEvidence(id)` | `GET /api/v1/evidence/{evidence_id}` |
+| `raw_item` | `getRawItem(rawRef)` | `GET /api/v1/raw-items/{raw_ref}` |
+| `agent_argument` | `getAgentArgument(id)` | `GET /api/v1/agent-arguments/{agent_argument_id}` |
+| `round_summary` | `getRoundSummary(id)` | `GET /api/v1/round-summaries/{round_summary_id}` |
+| `judgment` | — | 不另发请求；只用 trace 节点自带的 `title`/`summary` |
 
-所有连线必须是 90 度直角折线。禁止力导向、圆形节点和曲线连线。
+### 5.3 JudgmentInspector
 
-### 4.3 布局方向
+来自 `snapshot.judgment`：
 
-推荐默认布局：
+- final_signal（标题）+ reasoning（正文）；
+- 置信度行：`formatScore(confidence) / time_horizon`；
+- `risk_notes` 每条单独一项。
 
-```text
-Raw Item -> Evidence -> Agent Argument -> Judgment
-```
+禁止：没有 `judgment` 时不展示「最终结论」相关文案，只显示 EmptyState。
 
-也可以提供切换：
+### 5.4 图例 `legend-panel`
 
-- 证据到结论：适合审计；
-- 结论到证据：适合阅读最终 Judgment 后下钻；
-- Agent 轮次视图：适合观察 Bull/Bear 辩论。
+固定显示「推理边 / Trace 节点」两个示意图。
 
-MVP 先做一种默认布局，不需要复杂图编辑能力。
+## 6. 创建任务
 
-### 4.4 运行中状态
+`handleCreateWorkflow`：
 
-运行中不能等待最终 `trace` 才显示图。
+1. 校验 `ticker.trim()` 与 `selectedConfigId`；
+2. 置 `connection='creating'`、清空 `snapshot/trace/events/selectedNode`；
+3. 调用 `createWorkflowRun`，body 包含：
+   - `ticker / stock_code`（同值，临时双发，等后端协议确认后取其一）；
+   - `analysis_time`：默认 `new Date().toISOString()`；
+   - `workflow_config_id`；
+   - `query`：`lookback_days=30`、`sources=[akshare,tavily,exa]`、`evidence_types=[financial_report,company_news,industry_news]`、`max_results=50`；
+   - `options`：`stream=true, include_raw_payload=false, auto_run=true`。
+4. 创建成功 → `setWorkflowRunId(created.workflow_run_id)` → `loadWorkflowState(runId, 'replace_events')`；
+5. 失败 → `connection='error'`，错误消息走 `formatApiError`。
 
-前端构图策略：
+## 7. SSE 订阅
 
-1. 创建 workflow 后订阅 SSE；
-2. 根据事件生成临时运行节点，例如 connector、evidence、agent、judge；
-3. `agent_argument_delta` 和 `judgment_delta` 只显示为流式文本，不写入最终图节点；
-4. 收到 `agent_argument_completed`、`round_summary_completed`、`judgment_completed` 后，查询或合并对应资源；
-5. workflow 完成后拉取 `trace`，用后端 Trace Graph 替换临时图。
+`AnalysisPage` 调用 `src/hooks/useWorkflowStream.ts` 把订阅生命周期抽到 hook 内：
 
-规则：
+- 输入：`workflowRunId`；
+- 回调：`onReplaying`（建立连接前置 `connection='replaying'`）、`onOpen`、`onError`、`onParseError`、`onMessage(event)`；
+- 内部：`new EventSource(eventStreamUrl(runId, 0))`，覆盖 22 种事件类型的显式 `addEventListener`（含 `snapshot`）；`onerror → source.close()`，不自动重连；
+- 卸载：清理所有监听并关闭 `EventSource`。
 
-- 临时节点必须有“running / tentative”视觉状态；
-- 最终 `trace` 返回后，图以 `trace_nodes/trace_edges` 为准；
-- 如果 SSE 断线，先显示连接状态，再用 `snapshot` 恢复。
+`AnalysisPage.handleStreamMessage(parsed)`：
 
-## 5. 左侧 Debate Rail
+1. 如果 `event_type==='snapshot'`，把 `payload as WorkflowSnapshot` 写进 `snapshot`；
+2. 如果是 `workflow_failed / *_completed` 终态事件，触发 `loadWorkflowState(runId, 'merge_events')`；
+3. 按 `event_id` 去重，按 `sequence` 排序后写回 `events`。
 
-左侧不是聊天窗口，而是辩论目录和运行态索引。
+约束与缺口：
 
-展示：
-
-- Agent 列表：Bull、Bear、Risk、Valuation、Judge 等；
-- 每个 Agent 的运行状态；
-- 轮次；
-- 已完成论点数量；
-- 当前正在生成的 delta 片段；
-- 引用 Evidence 数量。
-
-点击行为：
-
-- 点击 Agent：主图高亮该 Agent 的所有 argument；
-- 点击 Round：主图过滤该轮；
-- 点击 Argument：右侧打开论点详情，中间图定位到节点。
-
-## 6. 右侧 Inspector
-
-右侧详情面板根据选中节点切换内容。
-
-### 6.1 Judgment 面板
-
-展示：
-
-- final signal；
-- confidence；
-- reasoning 摘要；
-- risk notes；
-- referenced argument ids；
-- trace 入口。
-
-禁止：
-
-- 展示没有 `judgment_id` 的最终投资结论；
-- 把报告视图 summary 当 Judgment。
-
-### 6.2 Agent Argument 面板
-
-展示：
-
-- Agent ID；
-- round；
-- thesis / argument 文本；
-- referenced evidence ids；
-- completed 状态；
-- 对应 Evidence 列表。
-
-### 6.3 Evidence 面板
-
-展示：
-
-- evidence id；
-- evidence type；
-- source；
-- source quality；
-- structuring confidence；
-- objective summary；
-- claims；
-- conflicts；
-- raw item 链接。
-
-规则：
-
-- Evidence 自身没有天然利多/利空属性；
-- `reference_role` 才表达它在某个论点中的引用角色。
-
-### 6.4 Raw Item 面板
-
-展示：
-
-- raw ref；
-- provider；
-- title / url；
-- collected_at；
-- payload 摘要；
-- 打开完整原文或 payload 的入口。
-
-## 7. 底部 Runtime Event Tape
-
-底部事件带用于展示 workflow 当前发生了什么。
-
-事件分组：
-
-- 采集：`connector_started`、`connector_progress`、`raw_item_collected`;
-- 证据：`evidence_normalized`、`evidence_structuring_started`、`evidence_structured`;
-- 辩论：`agent_run_started`、`agent_argument_delta`、`agent_argument_completed`;
-- 裁决：`judge_started`、`judge_tool_call_started`、`judge_tool_call_completed`、`judgment_delta`、`judgment_completed`;
-- 终态：`workflow_completed`、`workflow_failed`。
-
-展示规则：
-
-- 默认只展示最近事件；
-- 支持展开完整事件日志；
-- 每个事件保留 `event_id`、`sequence`、`created_at`；
-- 错误事件必须给出可见状态，不能只在控制台打印。
+- 当前每次重订阅都 `after_sequence=0`，依赖后端 replay 全量重放；前端没有持久化 `lastSequence`。
+- SSE 断线后不会自动重连，用户必须点击「刷新快照」。
+- `agent_argument_delta`、`judgment_delta`、`round_summary_delta` 目前只进 events 列表，**没有**驱动 Inspector 流式拼接。
 
 ## 8. 主要接口
 
-创建与恢复：
+接口实现散布在 `src/api/workflow.ts`（workflow 域）与 `src/api/evidence.ts`（节点下钻域）：
 
 ```http
-POST /api/v1/workflow-runs
-GET /api/v1/workflow-runs/{workflow_run_id}
-GET /api/v1/workflow-runs/{workflow_run_id}/snapshot
-GET /api/v1/workflow-runs/{workflow_run_id}/events
+GET  /api/v1/workflow-configs                                  -- listWorkflowConfigs
+POST /api/v1/workflow-runs                                     -- createWorkflowRun
+GET  /api/v1/workflow-runs/{workflow_run_id}/snapshot?include_events=true  -- getWorkflowSnapshot
+GET  /api/v1/workflow-runs/{workflow_run_id}/trace             -- getWorkflowTrace
+GET  /api/v1/workflow-runs/{workflow_run_id}/events?follow=true[&after_sequence=N]  -- eventStreamUrl
+GET  /api/v1/evidence/{evidence_id}                            -- getEvidence
+GET  /api/v1/raw-items/{raw_ref}                               -- getRawItem
+GET  /api/v1/agent-arguments/{agent_argument_id}               -- getAgentArgument
+GET  /api/v1/round-summaries/{round_summary_id}                -- getRoundSummary
 ```
 
-图和下钻：
+未启用但保留协议位的接口：
 
-```http
-GET /api/v1/workflow-runs/{workflow_run_id}/trace
-GET /api/v1/workflow-runs/{workflow_run_id}/evidence
-GET /api/v1/workflow-runs/{workflow_run_id}/evidence-references
-GET /api/v1/workflow-runs/{workflow_run_id}/agent-arguments
-GET /api/v1/workflow-runs/{workflow_run_id}/judgment
-```
+- `evidence-references`、`round-summaries/{id}`、`entities/{id}/relations`：当前 UI 不消费，需要时再接入。
 
-实体关系只做辅助下钻：
+## 9. 错误与失败
 
-```http
-GET /api/v1/entities/{entity_id}/relations?depth=1
-```
+`WorkflowRunCreateView` 和 `WorkflowSnapshot.workflow_run` 都新增了 `failure_code?: string | null` + `failure_message?: string | null`，作为 workflow 失败时的结构化原因。
 
-## 9. 空状态
+### 9.1 创建失败
 
-### 9.1 未创建 workflow
+- 网络/HTTP 错误：`connection='error'` + `formatApiError(error, '分析任务创建失败')`。
+- 后端立即返回 `status==='failed'` + `failure_message`：写入 `errorMessage`，仍记录 `workflow_run_id` 以便后续 snapshot 拉取失败上下文。
 
-中间图区域展示“需要先创建 workflow”的空态，不展示假图、演示图或实体知识图谱。
+### 9.2 Workflow 失败
 
-### 9.2 已创建但排队中
+`isWorkflowFailed = status==='failed' || stage==='failed'`：
 
-中间图展示 workflow 根节点和 queued 状态；底部事件带等待首个事件。
+- 清空 `trace`、`selectedNode`；
+- `failureSummary` 优先取 `snapshot.workflow_run.failure_message`；其次找最近一条 `workflow_failed` 事件，按 `payload.code` 走 `utils/failure.ts:summarizeFailurePayload` 映射；
+- 映射的友好文案（中文）：
 
-### 9.3 运行中
+  | code | 文案 |
+  | --- | --- |
+  | `insufficient_evidence` | 证据不足：{gaps} 或「证据不足，Judge 没有形成最终判断。」 |
+  | `agent_swarm_failed` | Agent 论证失败：{message} |
+  | `judge_failed` | Judge 汇总失败：{message} |
+  | `evidence_acquisition_failed` | 证据采集失败：{message} |
+  | `missing_runtime_configuration` | 「分析无法开始：后端运行配置不完整，请先配置数据源或模型 key。」 |
+  | `missing_judgment` | 「最终判断缺失：…」 |
 
-展示临时运行图和实时事件。
+### 9.3 节点详情拉取失败
 
-### 9.4 已完成
+不阻断已选中节点的 baseNode 展示，只在 `errorMessage` 上记账：`Evidence 加载失败 / Raw Item 加载失败 / Agent Argument 加载失败`。
 
-展示后端 `trace` 返回的最终图，并允许从图进入 Evidence、Raw、Agent Argument 和 Judgment。
+## 10. 视觉规范（落地版）
 
-### 9.5 失败
+- 中间图区：纯白底 + 1px 黑虚线网格；
+- 节点矩形黑框，hover / focus 状态切换为克莱因蓝描边但宽度不变（避免双框错觉）；
+- selected 状态走**反色**：节点矩形填充克莱因蓝、标题副标题文字变白；judgment 节点本来就是蓝底白字，选中后保持一致；
+- `judgment` 节点保留可换为蓝底白字的能力（CSS 类 `.trace-node.judgment`）；
+- 连线 90° 折线、标签等宽字体 + 实色背景框；
+- 冲突 / 反驳边类型只通过 `edge_type` 区分，不大面积染色；
+- 悬停 / 选中使用瞬时反色，不使用阴影、不使用圆角。
 
-保留已经产生的 Evidence、事件和错误信息。不能把失败页清空。
-
-## 10. 视觉规范
-
-遵循 `design_skill.md`：
-
-- 中间图是纯白底、纯黑 1px 网格；
-- 节点全部是直角矩形；
-- 连接全部是直角折线；
-- 图上标签使用等宽字体；
-- Judge 节点可使用克莱因蓝实底；
-- 不使用阴影、圆角、渐变和大面积灰色；
-- hover 使用瞬时反色；
-- 当前选中路径使用克莱因蓝描边；
-- 冲突或错误只用小面积红色标记。
+完整调色板和字体规范见 `design_skill.md`。
 
 ## 11. MVP 范围
 
-MVP 必须实现：
+已实现：
 
-- `workflow_run_id` 路由；
-- 创建 workflow；
-- SSE 订阅和断线恢复；
-- 中间 Trace Graph；
-- 节点点击 Inspector；
-- Evidence / Raw 下钻入口；
-- workflow completed 后拉取最终 `trace`；
-- 历史 workflow 打开后复用同一分析页。
+- workflow 创建 + 表单；
+- snapshot + trace + events 三接口联调；
+- SSE 订阅 + 终态事件触发 snapshot/trace 复拉；
+- 中间 Trace Graph SVG + 节点点击下钻；
+- Evidence / Raw / Argument Inspector；
+- 失败态友好文案。
 
-MVP 暂不实现：
+暂未实现（已知缺口）：
 
-- 手动编辑图；
-- 多人协作；
-- WebSocket；
-- 跨 workflow 多跳知识图谱；
-- 把 report view 混入主图。
+- `workflow_run_id` 写入 URL；
+- SSE 自动重连 + `after_sequence` 续传；
+- delta 流式拼接到 Inspector；
+- `evidence-references` 视图、Entity Relations 下钻；
+- 多 workflow tab；
+- 图布局切换（证据→结论 / 结论→证据 / 按 Agent 轮次分组）。
