@@ -321,7 +321,81 @@ def test_report_run_saves_report_view_cited_references_and_tolerates_missing_evi
     repo.close()
 
 
-def test_industry_details_view_uses_entity_relation_and_evidence(tmp_path: Path) -> None:
+def test_stock_analysis_ignores_incomplete_workflow_rows_when_selecting_latest_judgment(tmp_path: Path) -> None:
+    repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
+    reader = _reader_with_stock_entity_only(repo)
+
+    class IncompleteRun:
+        def __init__(self, workflow_run_id: str) -> None:
+            self.workflow_run_id = workflow_run_id
+            self.entity_id = "ent_company_002594"
+
+    class FakeWorkflowRepository:
+        def list_runs(self, *, ticker: str | None = None, status: str | None = None, limit: int = 20, offset: int = 0):
+            _ = status
+            assert ticker == "002594"
+            if offset == 0:
+                return [IncompleteRun("wr_incomplete"), WorkflowRunRecord(
+                    workflow_run_id="wr_complete",
+                    correlation_id="corr_complete",
+                    ticker="002594",
+                    analysis_time=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+                    workflow_config_id="cfg_default",
+                    status="completed",
+                    stage="judge",
+                    query=WorkflowQuery(),
+                    options=WorkflowOptions(),
+                    entity_id="ent_company_002594",
+                    stock_code="002594.SZ",
+                    created_at=datetime(2026, 5, 13, 9, 0, tzinfo=timezone.utc),
+                    started_at=None,
+                    completed_at=datetime(2026, 5, 13, 9, 5, tzinfo=timezone.utc),
+                    judgment_id="jdg_complete",
+                    final_signal="positive",
+                    confidence=0.7,
+                    progress=WorkflowProgress(),
+                    failure_code=None,
+                    failure_message=None,
+                    evidence_gaps=(),
+                    search_task_ids=(),
+                )], 2
+            return [], 2
+
+    reader.workflow_repository = FakeWorkflowRepository()
+    reader.agent_repository.save_judgment(
+        JudgmentRecord(
+            judgment_id="jdg_complete",
+            workflow_run_id="wr_complete",
+            final_signal="positive",
+            confidence=0.7,
+            time_horizon="short_term",
+            key_positive_evidence_ids=(),
+            key_negative_evidence_ids=(),
+            reasoning="完整 workflow 行仍可提供最新 judgment。",
+            risk_notes=(),
+            referenced_agent_argument_ids=(),
+            limitations=(),
+            created_at=datetime(2026, 5, 13, 9, 5, tzinfo=timezone.utc),
+        )
+    )
+
+    view, refresh_task_id = build_stock_analysis_view(
+        reader=reader,
+        stock_code="002594.SZ",
+        query=None,
+        workflow_run_id=None,
+        latest=True,
+        refresh=RefreshPolicy.NEVER,
+    )
+
+    assert refresh_task_id is None
+    assert view.data_state == "ready"
+    assert view.workflow_run_id == "wr_complete"
+    assert view.judgment_id == "jdg_complete"
+    assert view.action is not None
+    repo.close()
+
+
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     reader = _reader_with_industry_relation(repo)
 

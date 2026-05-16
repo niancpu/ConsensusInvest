@@ -95,11 +95,16 @@ class ReportRuntimeReader:
         while True:
             rows, total = self.workflow_repository.list_runs(ticker=ticker, limit=limit, offset=offset)
             for run in rows:
-                if run.entity_id is not None and run.entity_id != entity_id:
+                run_entity_id = getattr(run, "entity_id", None)
+                if run_entity_id is not None and run_entity_id != entity_id:
                     continue
-                if stock_code is not None and run.stock_code not in {None, stock_code}:
+                run_stock_code = getattr(run, "stock_code", None)
+                if stock_code is not None and run_stock_code not in {None, stock_code}:
                     continue
-                judgment = self.agent_repository.get_judgment_by_workflow(run.workflow_run_id)
+                workflow_run_id = getattr(run, "workflow_run_id", None)
+                if not workflow_run_id:
+                    continue
+                judgment = self.agent_repository.get_judgment_by_workflow(workflow_run_id)
                 if judgment is not None:
                     return judgment
             offset += len(rows)

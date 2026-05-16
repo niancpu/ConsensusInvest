@@ -1,4 +1,4 @@
-import { readJsonResponse } from './errors';
+import { API_TIMEOUT_REASON, mergeAbortSignals, readJsonResponse, toApiError } from './errors';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
@@ -26,6 +26,11 @@ export type ListResponse<T> = {
   };
 };
 
+export type ApiRequestOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
 export function withBase(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
     return path;
@@ -33,12 +38,27 @@ export function withBase(path: string): string {
   return `${API_BASE}${path}`;
 }
 
-export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(withBase(path), {
-    headers: { Accept: 'application/json' },
-    signal,
-  });
-  return readJsonResponse<T>(response, path);
+export async function apiGet<T>(path: string, options?: AbortSignal | ApiRequestOptions): Promise<T> {
+  const requestOptions = normalizeRequestOptions(options);
+  const timeoutController = requestOptions.timeoutMs ? new AbortController() : null;
+  const timeoutId =
+    timeoutController && requestOptions.timeoutMs
+      ? window.setTimeout(() => timeoutController.abort(API_TIMEOUT_REASON), requestOptions.timeoutMs)
+      : null;
+
+  try {
+    const response = await fetch(withBase(path), {
+      headers: { Accept: 'application/json' },
+      signal: mergeAbortSignals(requestOptions.signal, timeoutController?.signal),
+    });
+    return readJsonResponse<T>(response, path);
+  } catch (error) {
+    throw toApiError(error, path, timeoutController?.signal.reason);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
@@ -51,4 +71,14 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   return readJsonResponse<T>(response, path);
+}
+
+function normalizeRequestOptions(options?: AbortSignal | ApiRequestOptions): ApiRequestOptions {
+  if (!options) {
+    return {};
+  }
+  if (options instanceof AbortSignal) {
+    return { signal: options };
+  }
+  return options;
 }
