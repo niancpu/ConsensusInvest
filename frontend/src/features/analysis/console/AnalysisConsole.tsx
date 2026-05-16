@@ -22,6 +22,7 @@ type Props = {
   eventCount: number;
   latestStatus: string;
   latestStage: string;
+  failedStage: string;
   errorMessage: string;
 };
 
@@ -39,9 +40,10 @@ export default function AnalysisConsole({
   eventCount,
   latestStatus,
   latestStage,
+  failedStage,
   errorMessage,
 }: Props) {
-  const stageDisplay = getStageDisplay(latestStage, latestStatus);
+  const stageDisplay = getStageDisplay(latestStage, latestStatus, failedStage);
 
   return (
     <aside className="analysis-console" aria-label="Analysis controls">
@@ -102,6 +104,12 @@ export default function AnalysisConsole({
         </div>
         <strong className="stage-title">{stageDisplay.label}</strong>
         <p>{stageDisplay.description}</p>
+        {stageDisplay.failedStageLabel ? (
+          <div className="stage-failure">
+            <span>失败发生阶段</span>
+            <strong>{stageDisplay.failedStageLabel}</strong>
+          </div>
+        ) : null}
         <dl className="stage-meta">
           <div>
             <dt>stage</dt>

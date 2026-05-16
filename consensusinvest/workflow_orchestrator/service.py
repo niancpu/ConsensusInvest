@@ -34,6 +34,8 @@ from .models import (
 )
 from .repository import InMemoryWorkflowRepository
 
+_MAX_WORKFLOW_GAP_FILL_ROUNDS = 2
+
 
 class WorkflowOrchestrator:
     def __init__(
@@ -140,92 +142,110 @@ class WorkflowOrchestrator:
                     "evidence_acquisition_failed",
                     "No Evidence was ingested after the initial workflow acquisition task.",
                 )
-        run = self.repository.update_run(workflow_run_id, stage="structuring_evidence")
-        self._structure_selected_evidence(run, evidence_ids)
-        progress = WorkflowProgress(
-            raw_items_collected=len(evidence_ids),
-            evidence_items_normalized=len(evidence_ids),
-            evidence_items_structured=self._structured_count(run, evidence_ids),
-            agent_arguments_completed=0,
-        )
-        self.repository.update_run(workflow_run_id, progress=progress)
-
-        envelope = self._envelope(run, suffix="agent_swarm")
-        self.repository.update_run(workflow_run_id, stage="debate")
-        try:
-            swarm_outcome = self.agent_swarm.run(
-                envelope,
-                {
-                    "workflow_run_id": workflow_run_id,
-                    "ticker": run.ticker,
-                    "entity_id": run.entity_id,
-                    "workflow_config_id": run.workflow_config_id,
-                    "evidence_selection": EvidenceSelection(evidence_ids=tuple(evidence_ids)),
-                    "history": {"previous_judgment_ids": []},
-                },
-            )
-        except Exception as exc:
-            return self._mark_failed(
+        gap_fill_round = 0
+        while True:
+            run = self._structure_and_update_progress(
                 run,
-                "agent_swarm_failed",
-                _runtime_error_message(exc, stage="Agent Swarm"),
+                evidence_ids,
+                agent_arguments_completed=0,
             )
-        if swarm_outcome.status == "insufficient_evidence":
-            return self._mark_insufficient(run, tuple(swarm_outcome.gaps))
-        for argument_id in swarm_outcome.agent_argument_ids:
-            argument = self.agent_swarm.repository.get_argument(argument_id)
-            self.repository.append_event(
-                workflow_run_id,
-                "agent_argument_completed",
-                {
-                    "agent_argument_id": argument_id,
-                    "round": argument.round if argument is not None else None,
-                },
-                created_at=swarm_outcome.accepted_at,
-            )
-        round_summary_ids = _round_summary_ids(swarm_outcome)
-        for round_summary_id in round_summary_ids:
-            summary = self.agent_swarm.repository.get_round_summary(round_summary_id)
-            self.repository.append_event(
-                workflow_run_id,
-                "round_summary_completed",
-                {
-                    "round_summary_id": round_summary_id,
-                    "round": summary.round if summary is not None else None,
-                },
-                created_at=swarm_outcome.accepted_at,
-            )
-        progress = WorkflowProgress(
-            raw_items_collected=len(evidence_ids),
-            evidence_items_normalized=len(evidence_ids),
-            evidence_items_structured=self._structured_count(run, evidence_ids),
-            agent_arguments_completed=len(swarm_outcome.agent_argument_ids),
-        )
-        self.repository.update_run(workflow_run_id, progress=progress, stage="judge")
-        self.repository.append_event(workflow_run_id, "judge_started", {}, created_at=_timestamp(run.analysis_time))
 
-        try:
-            judge_outcome = self.judge.run(
-                self._envelope(run, suffix="judge"),
-                {
-                    "workflow_run_id": workflow_run_id,
-                    "round_summary_ids": list(round_summary_ids),
-                    "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
-                    "key_evidence_ids": evidence_ids,
-                    "tool_access": JudgeToolAccess(),
-                },
-            )
-        except Exception as exc:
-            return self._mark_failed(
+            envelope = self._envelope(run, suffix=f"agent_swarm_{gap_fill_round}")
+            run = self.repository.update_run(workflow_run_id, stage="debate")
+            try:
+                swarm_outcome = self.agent_swarm.run(
+                    envelope,
+                    {
+                        "workflow_run_id": workflow_run_id,
+                        "ticker": run.ticker,
+                        "entity_id": run.entity_id,
+                        "workflow_config_id": run.workflow_config_id,
+                        "evidence_selection": EvidenceSelection(evidence_ids=tuple(evidence_ids)),
+                        "history": {"previous_judgment_ids": []},
+                    },
+                )
+            except Exception as exc:
+                return self._mark_failed(
+                    run,
+                    "agent_swarm_failed",
+                    _runtime_error_message(exc, stage="Agent Swarm"),
+                )
+            if swarm_outcome.status == "insufficient_evidence":
+                run, evidence_ids, filled = self._fill_gaps_and_select_evidence(
+                    run,
+                    tuple(swarm_outcome.gaps),
+                    current_evidence_ids=evidence_ids,
+                    round_index=gap_fill_round,
+                    reason="agent_swarm_request_search",
+                )
+                if filled and gap_fill_round < _MAX_WORKFLOW_GAP_FILL_ROUNDS:
+                    gap_fill_round += 1
+                    continue
+                return self._mark_insufficient(run, tuple(swarm_outcome.gaps))
+            for argument_id in swarm_outcome.agent_argument_ids:
+                argument = self.agent_swarm.repository.get_argument(argument_id)
+                self.repository.append_event(
+                    workflow_run_id,
+                    "agent_argument_completed",
+                    {
+                        "agent_argument_id": argument_id,
+                        "round": argument.round if argument is not None else None,
+                    },
+                    created_at=swarm_outcome.accepted_at,
+                )
+            round_summary_ids = _round_summary_ids(swarm_outcome)
+            for round_summary_id in round_summary_ids:
+                summary = self.agent_swarm.repository.get_round_summary(round_summary_id)
+                self.repository.append_event(
+                    workflow_run_id,
+                    "round_summary_completed",
+                    {
+                        "round_summary_id": round_summary_id,
+                        "round": summary.round if summary is not None else None,
+                    },
+                    created_at=swarm_outcome.accepted_at,
+                )
+            run = self._update_progress(
                 run,
-                "judge_failed",
-                _runtime_error_message(exc, stage="Judge"),
+                evidence_ids,
+                agent_arguments_completed=len(swarm_outcome.agent_argument_ids),
+                stage="judge",
             )
-        if judge_outcome.status == "insufficient_evidence":
-            return self._mark_insufficient(run, tuple(judge_outcome.gaps))
-        judgment = self.agent_swarm.repository.get_judgment(judge_outcome.judgment_id or "")
-        if judgment is None:
-            return self._mark_failed(run, "missing_judgment", "Judge completed without saved judgment.")
+            self.repository.append_event(workflow_run_id, "judge_started", {}, created_at=_timestamp(run.analysis_time))
+
+            try:
+                judge_outcome = self.judge.run(
+                    self._envelope(run, suffix=f"judge_{gap_fill_round}"),
+                    {
+                        "workflow_run_id": workflow_run_id,
+                        "round_summary_ids": list(round_summary_ids),
+                        "agent_argument_ids": list(swarm_outcome.agent_argument_ids),
+                        "key_evidence_ids": evidence_ids,
+                        "tool_access": JudgeToolAccess(),
+                    },
+                )
+            except Exception as exc:
+                return self._mark_failed(
+                    run,
+                    "judge_failed",
+                    _runtime_error_message(exc, stage="Judge"),
+                )
+            if judge_outcome.status == "insufficient_evidence":
+                run, evidence_ids, filled = self._fill_gaps_and_select_evidence(
+                    run,
+                    tuple(judge_outcome.gaps),
+                    current_evidence_ids=evidence_ids,
+                    round_index=gap_fill_round,
+                    reason="judge_request_search",
+                )
+                if filled and gap_fill_round < _MAX_WORKFLOW_GAP_FILL_ROUNDS:
+                    gap_fill_round += 1
+                    continue
+                return self._mark_insufficient(run, tuple(judge_outcome.gaps))
+            judgment = self.agent_swarm.repository.get_judgment(judge_outcome.judgment_id or "")
+            if judgment is None:
+                return self._mark_failed(run, "missing_judgment", "Judge completed without saved judgment.")
+            break
 
         completed_at = judgment.created_at or _timestamp(run.analysis_time)
         for tool_call in self.agent_swarm.repository.list_tool_calls(judgment.judgment_id):
@@ -255,7 +275,7 @@ class WorkflowOrchestrator:
             judgment_id=judgment.judgment_id,
             final_signal=judgment.final_signal,
             confidence=judgment.confidence,
-            progress=progress,
+            progress=run.progress,
         )
 
     def list_runs(
@@ -305,9 +325,78 @@ class WorkflowOrchestrator:
         run = self._required_run(workflow_run_id)
         nodes: list[WorkflowTraceNode] = []
         edges: list[WorkflowTraceEdge] = []
+        node_ids: set[str] = set()
+
+        def add_node(node: WorkflowTraceNode) -> None:
+            if node.node_id in node_ids:
+                return
+            node_ids.add(node.node_id)
+            nodes.append(node)
+
+        events = self.repository.list_events(workflow_run_id)
         judgment = self.agent_swarm.repository.get_judgment_by_workflow(workflow_run_id)
+        agent_runs = self.agent_swarm.repository.list_agent_runs(workflow_run_id)
+        latest_agent_run_id = _latest_agent_run_id(agent_runs)
+        for agent_run in agent_runs:
+            agent_node_id = f"agent:{agent_run.agent_id}"
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent",
+                    node_id=agent_node_id,
+                    title=agent_run.agent_id,
+                    summary=f"{agent_run.role} agent",
+                )
+            )
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent_run",
+                    node_id=agent_run.agent_run_id,
+                    title=f"{agent_run.agent_id} 执行辩论",
+                    summary=_agent_run_summary(agent_run),
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=agent_node_id,
+                    to_node_id=agent_run.agent_run_id,
+                    edge_type="executes",
+                )
+            )
+        judge_run_id = f"agent_run:judge:{workflow_run_id}"
+        has_judge_activity = judgment is not None or _has_judge_activity(events)
+        if has_judge_activity:
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent",
+                    node_id="agent:judge",
+                    title="Judge",
+                    summary="Judge agent",
+                )
+            )
+            add_node(
+                WorkflowTraceNode(
+                    node_type="agent_run",
+                    node_id=judge_run_id,
+                    title="Judge 执行裁决",
+                    summary=f"Judge action for workflow {workflow_run_id}",
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id="agent:judge",
+                    to_node_id=judge_run_id,
+                    edge_type="executes",
+                )
+            )
         if judgment is not None:
-            nodes.append(
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=judge_run_id,
+                    to_node_id=judgment.judgment_id,
+                    edge_type="produces_judgment",
+                )
+            )
+            add_node(
                 WorkflowTraceNode(
                     node_type="judgment",
                     node_id=judgment.judgment_id,
@@ -323,7 +412,7 @@ class WorkflowOrchestrator:
                 )
             )
         for argument in self.agent_swarm.repository.list_arguments(workflow_run_id):
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="agent_argument",
                     node_id=argument.agent_argument_id,
@@ -337,6 +426,13 @@ class WorkflowOrchestrator:
                         referenced_evidence_ids=argument.referenced_evidence_ids,
                         counter_evidence_ids=argument.counter_evidence_ids,
                     ),
+                )
+            )
+            edges.append(
+                WorkflowTraceEdge(
+                    from_node_id=argument.agent_run_id,
+                    to_node_id=argument.agent_argument_id,
+                    edge_type="produces_argument",
                 )
             )
             if judgment is not None and argument.agent_argument_id in judgment.referenced_agent_argument_ids:
@@ -356,7 +452,7 @@ class WorkflowOrchestrator:
                     )
                 )
         for summary in self.agent_swarm.repository.list_round_summaries(workflow_run_id):
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="round_summary",
                     node_id=summary.round_summary_id,
@@ -388,15 +484,51 @@ class WorkflowOrchestrator:
                 )
         evidence_items = self._query_evidence(run, limit=100)
         raw_items_by_ref = self._raw_items_by_ref(run, evidence_items)
+        search_requests_by_task_id = _search_request_metadata_by_task_id(events)
+        linked_search_request_ids: set[str] = set()
         for evidence in evidence_items:
             raw_item = raw_items_by_ref.get(evidence.raw_ref)
+            task_id = _raw_task_id(raw_item)
+            if task_id and task_id in search_requests_by_task_id:
+                search_metadata = search_requests_by_task_id.get(task_id, {})
+                search_request_id = f"search_request:{task_id}"
+                add_node(
+                    WorkflowTraceNode(
+                        node_type="search_request",
+                        node_id=search_request_id,
+                        title=_search_request_title(search_metadata.get("reason")),
+                        summary=_search_request_summary(task_id, search_metadata),
+                    )
+                )
+                if search_request_id not in linked_search_request_ids:
+                    origin_id = _search_request_origin_id(
+                        search_metadata.get("reason"),
+                        debate_agent_run_id=latest_agent_run_id,
+                        judge_run_id=judge_run_id if has_judge_activity else None,
+                    )
+                    if origin_id is not None:
+                        edges.append(
+                            WorkflowTraceEdge(
+                                from_node_id=origin_id,
+                                to_node_id=search_request_id,
+                                edge_type="requests_search",
+                            )
+                        )
+                    linked_search_request_ids.add(search_request_id)
+                edges.append(
+                    WorkflowTraceEdge(
+                        from_node_id=search_request_id,
+                        to_node_id=evidence.evidence_id,
+                        edge_type="search_result",
+                    )
+                )
             structure_summary = self._evidence_structure_summary(run, evidence.evidence_id)
             trace_summary = display_text_for_raw_payload(
                 structure_summary or evidence.content,
                 raw_item.raw_payload if raw_item is not None else None,
                 source_label=_source_label(raw_item, evidence.source),
             )
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="evidence",
                     node_id=evidence.evidence_id,
@@ -404,7 +536,7 @@ class WorkflowOrchestrator:
                     summary=trace_summary or evidence.evidence_type or evidence.source or "",
                 )
             )
-            nodes.append(
+            add_node(
                 WorkflowTraceNode(
                     node_type="raw_item",
                     node_id=evidence.raw_ref,
@@ -524,6 +656,137 @@ class WorkflowOrchestrator:
             search_task_ids=(*run.search_task_ids, str(task_id)),
         )
         return updated_run, self._select_evidence(updated_run)
+
+    def _fill_gaps_and_select_evidence(
+        self,
+        run: WorkflowRunRecord,
+        gaps: tuple,
+        *,
+        current_evidence_ids: list[str],
+        round_index: int,
+        reason: str,
+    ) -> tuple[WorkflowRunRecord, list[str], bool]:
+        search_pool = getattr(self.acquisition, "search_pool", None)
+        if search_pool is None:
+            return run, current_evidence_ids, False
+
+        submitted_task_ids: list[str] = []
+        for gap_index, gap in enumerate(gaps):
+            self.repository.append_event(
+                run.workflow_run_id,
+                "connector_progress",
+                {
+                    "status": "requested",
+                    "reason": reason,
+                    "gap_type": gap.gap_type,
+                    "description": gap.description,
+                },
+                created_at=_timestamp(run.analysis_time),
+            )
+            if gap.suggested_search is None:
+                continue
+            try:
+                receipt = self.acquisition.request_gap_fill(
+                    self._envelope(
+                        run,
+                        suffix=f"{reason}_{round_index}_{gap_index}_{gap.gap_type}",
+                    ),
+                    build_gap_fill_request(
+                        workflow_run_id=run.workflow_run_id,
+                        gap=gap,
+                        ticker=run.ticker,
+                        stock_code=run.stock_code,
+                        entity_id=run.entity_id,
+                        query=run.query,
+                    ),
+                )
+            except RuntimeError as exc:
+                self.repository.append_event(
+                    run.workflow_run_id,
+                    "connector_progress",
+                    {
+                        "status": "failed",
+                        "reason": reason,
+                        "gap_type": gap.gap_type,
+                        "message": str(exc),
+                    },
+                    created_at=_timestamp(run.analysis_time),
+                )
+                continue
+
+            task_id = _value(receipt, "task_id")
+            if task_id is None:
+                continue
+            task_id = str(task_id)
+            submitted_task_ids.append(task_id)
+            self.repository.append_event(
+                run.workflow_run_id,
+                "connector_started",
+                {
+                    "task_id": task_id,
+                    "sources": list(run.query.sources),
+                    "reason": reason,
+                    "gap_type": gap.gap_type,
+                },
+                created_at=_timestamp(run.analysis_time),
+            )
+            run_task_once = getattr(search_pool, "run_task_once", None)
+            if callable(run_task_once):
+                run_task_once(task_id)
+            self.repository.append_event(
+                run.workflow_run_id,
+                "connector_progress",
+                {
+                    "status": "completed",
+                    "task_id": task_id,
+                    "reason": reason,
+                    "gap_type": gap.gap_type,
+                },
+                created_at=_timestamp(run.analysis_time),
+            )
+
+        if submitted_task_ids:
+            run = self.repository.update_run(
+                run.workflow_run_id,
+                search_task_ids=_dedupe_ids((*run.search_task_ids, *submitted_task_ids)),
+            )
+        next_evidence_ids = self._select_evidence(run)
+        has_new_evidence = bool(set(next_evidence_ids) - set(current_evidence_ids))
+        return run, next_evidence_ids or current_evidence_ids, has_new_evidence
+
+    def _structure_and_update_progress(
+        self,
+        run: WorkflowRunRecord,
+        evidence_ids: list[str],
+        *,
+        agent_arguments_completed: int,
+    ) -> WorkflowRunRecord:
+        run = self.repository.update_run(run.workflow_run_id, stage="structuring_evidence")
+        self._structure_selected_evidence(run, evidence_ids)
+        return self._update_progress(
+            run,
+            evidence_ids,
+            agent_arguments_completed=agent_arguments_completed,
+        )
+
+    def _update_progress(
+        self,
+        run: WorkflowRunRecord,
+        evidence_ids: list[str],
+        *,
+        agent_arguments_completed: int,
+        stage: str | None = None,
+    ) -> WorkflowRunRecord:
+        progress = WorkflowProgress(
+            raw_items_collected=len(evidence_ids),
+            evidence_items_normalized=len(evidence_ids),
+            evidence_items_structured=self._structured_count(run, evidence_ids),
+            agent_arguments_completed=agent_arguments_completed,
+        )
+        kwargs: dict[str, Any] = {"progress": progress}
+        if stage is not None:
+            kwargs["stage"] = stage
+        return self.repository.update_run(run.workflow_run_id, **kwargs)
 
     def _structure_selected_evidence(self, run: WorkflowRunRecord, evidence_ids: list[str]) -> None:
         for evidence_id in evidence_ids:
@@ -646,7 +909,6 @@ class WorkflowOrchestrator:
         return None
 
     def _mark_insufficient(self, run: WorkflowRunRecord, gaps: tuple) -> WorkflowRunRecord:
-        search_task_ids: list[str] = []
         for gap in gaps:
             self.repository.append_event(
                 run.workflow_run_id,
@@ -654,29 +916,14 @@ class WorkflowOrchestrator:
                 {"gap_type": gap.gap_type, "description": gap.description},
                 created_at=_timestamp(run.analysis_time),
             )
-            if gap.suggested_search is None:
-                continue
-            try:
-                receipt = self.acquisition.request_gap_fill(
-                    self._envelope(run, suffix=f"gap_{gap.gap_type}"),
-                    build_gap_fill_request(
-                        workflow_run_id=run.workflow_run_id,
-                        gap=gap,
-                        ticker=run.ticker,
-                        stock_code=run.stock_code,
-                        entity_id=run.entity_id,
-                        query=run.query,
-                    ),
-                )
-                task_id = getattr(receipt, "task_id", None)
-                if task_id is not None:
-                    search_task_ids.append(str(task_id))
-            except RuntimeError:
-                pass
         self.repository.append_event(
             run.workflow_run_id,
             "workflow_failed",
-            {"code": "insufficient_evidence", "gaps": [_to_plain(gap) for gap in gaps]},
+            {
+                "code": "insufficient_evidence",
+                "failed_stage": run.stage,
+                "gaps": [_to_plain(gap) for gap in gaps],
+            },
             created_at=_timestamp(run.analysis_time),
         )
         return self.repository.update_run(
@@ -685,7 +932,7 @@ class WorkflowOrchestrator:
             stage="failed",
             completed_at=_timestamp(run.analysis_time),
             evidence_gaps=gaps,
-            search_task_ids=tuple(search_task_ids),
+            search_task_ids=run.search_task_ids,
             failure_code="insufficient_evidence",
             failure_message="Evidence is insufficient for a complete workflow judgment.",
         )
@@ -694,7 +941,7 @@ class WorkflowOrchestrator:
         self.repository.append_event(
             run.workflow_run_id,
             "workflow_failed",
-            {"code": code, "message": message},
+            {"code": code, "failed_stage": run.stage, "message": message},
             created_at=_timestamp(run.analysis_time),
         )
         return self.repository.update_run(
@@ -740,6 +987,87 @@ def _round_summary_ids(swarm_outcome: Any) -> tuple[str, ...]:
         return ids
     round_summary_id = getattr(swarm_outcome, "round_summary_id", None)
     return (round_summary_id,) if round_summary_id else ()
+
+
+def _latest_agent_run_id(agent_runs: list[Any]) -> str | None:
+    if not agent_runs:
+        return None
+    return max(agent_runs, key=lambda run: getattr(run, "started_at", datetime.min.replace(tzinfo=UTC))).agent_run_id
+
+
+def _has_judge_activity(events: list[WorkflowEventRecord]) -> bool:
+    for event in events:
+        if event.event_type == "judge_started":
+            return True
+        if (event.payload or {}).get("reason") == "judge_request_search":
+            return True
+    return False
+
+
+def _agent_run_summary(agent_run: Any) -> str:
+    rounds = ", ".join(str(value) for value in getattr(agent_run, "rounds", ()) or ())
+    status = getattr(agent_run, "status", "")
+    return f"status={status}; rounds={rounds or 'pending'}"
+
+
+def _search_request_metadata_by_task_id(events: list[WorkflowEventRecord]) -> dict[str, dict[str, str]]:
+    result: dict[str, dict[str, str]] = {}
+    for event in events:
+        if event.event_type not in {"connector_started", "connector_progress"}:
+            continue
+        payload = event.payload or {}
+        task_id = payload.get("task_id")
+        if not task_id:
+            continue
+        key = str(task_id)
+        row = result.setdefault(key, {})
+        for name in ("reason", "gap_type"):
+            value = payload.get(name)
+            if value is not None:
+                row[name] = str(value)
+    return result
+
+
+def _raw_task_id(raw_item: Any | None) -> str | None:
+    if raw_item is None:
+        return None
+    ingest_context = getattr(raw_item, "ingest_context", {}) or {}
+    task_id = ingest_context.get("task_id")
+    return str(task_id) if task_id else None
+
+
+def _search_request_title(reason: str | None) -> str:
+    if reason == "agent_swarm_request_search":
+        return "辩论补充搜索"
+    if reason == "judge_request_search":
+        return "Judge补充搜索"
+    if reason == "initial_evidence_acquisition":
+        return "初始证据采集"
+    return "搜索请求"
+
+
+def _search_request_summary(task_id: str, metadata: dict[str, str]) -> str:
+    parts = [f"task_id={task_id}"]
+    reason = metadata.get("reason")
+    gap_type = metadata.get("gap_type")
+    if reason:
+        parts.append(f"reason={reason}")
+    if gap_type:
+        parts.append(f"gap_type={gap_type}")
+    return "; ".join(parts)
+
+
+def _search_request_origin_id(
+    reason: str | None,
+    *,
+    debate_agent_run_id: str | None,
+    judge_run_id: str | None,
+) -> str | None:
+    if reason == "agent_swarm_request_search":
+        return debate_agent_run_id
+    if reason == "judge_request_search":
+        return judge_run_id
+    return None
 
 
 def _to_plain(value: Any) -> Any:
@@ -802,6 +1130,14 @@ def _merge_aliases(*groups: Any) -> tuple[str, ...]:
             seen.add(key)
             aliases.append(text)
     return tuple(aliases)
+
+
+def _dedupe_ids(values: tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return tuple(result)
 
 
 def _raw_item_source_summary(raw_item: Any) -> str:

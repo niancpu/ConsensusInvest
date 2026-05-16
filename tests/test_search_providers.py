@@ -224,36 +224,15 @@ def test_env_factory_parses_provider_options(monkeypatch):
     assert provider.max_results == 9
 
 
-def test_akshare_provider_maps_optional_module_results():
+def test_akshare_provider_rejects_news_only_scope():
     class FakeAkShare:
         def stock_news_em(self, *, symbol):
-            assert symbol == "002594"
-            return FakeFrame(
-                [
-                    {
-                        "新闻标题": "比亚迪新闻",
-                        "新闻链接": "https://example.com/akshare/news",
-                        "新闻内容": "AkShare 新闻原文。",
-                        "发布时间": "2026-05-12 09:30:00",
-                        "文章来源": "东方财富",
-                    }
-                ]
-            )
+            raise AssertionError("AkShare should not be used for company news in workflow analysis")
 
     provider = AkShareSearchProvider(akshare_module=FakeAkShare())
 
-    response = provider.search(make_envelope(), make_task(max_results=1))
-
-    item = response.items[0]
-    assert response.source_type == "market_data"
-    assert item["source"] == "akshare"
-    assert item["source_type"] == "market_data"
-    assert item["title"] == "比亚迪新闻"
-    assert item["url"] == "https://example.com/akshare/news"
-    assert item["content"] == "AkShare 新闻原文。"
-    assert item["author"] == "东方财富"
-    assert item["raw_payload"]["provider_api"] == "stock_news_em"
-    assert item["raw_payload"]["provider_symbol"] == "002594"
+    with pytest.raises(RuntimeError, match="no supported interface"):
+        provider.search(make_envelope(), make_task(max_results=1))
 
 
 def test_akshare_provider_summarizes_numeric_table_rows_with_field_names():

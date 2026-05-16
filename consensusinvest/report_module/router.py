@@ -81,7 +81,10 @@ def get_stock_analysis(
         latest=latest,
         refresh=refresh,
     )
-    return SingleResponse[StockAnalysisView](data=view, meta=Meta(refresh_task_id=refresh_task_id))
+    return SingleResponse[StockAnalysisView](
+        data=view,
+        meta=Meta(refresh_task_id=refresh_task_id, report_run_id=view.report_run_id),
+    )
 
 
 @router.get(
@@ -96,7 +99,7 @@ def get_industry_details(
     view = service.build_industry_details_view(
         reader=reader, stock_code=stock_code, workflow_run_id=workflow_run_id
     )
-    return SingleResponse[IndustryDetailsView](data=view)
+    return SingleResponse[IndustryDetailsView](data=view, meta=Meta(report_run_id=view.report_run_id))
 
 
 @router.get(
@@ -112,7 +115,7 @@ def get_event_impact_ranking(
     view = service.build_event_impact_ranking(
         reader=reader, stock_code=stock_code, workflow_run_id=workflow_run_id, limit=limit
     )
-    return SingleResponse[EventImpactRankingView](data=view)
+    return SingleResponse[EventImpactRankingView](data=view, meta=Meta(report_run_id=view.report_run_id))
 
 
 @router.get(
@@ -127,7 +130,7 @@ def get_benefits_risks(
     view = service.build_benefits_risks_view(
         reader=reader, stock_code=stock_code, workflow_run_id=workflow_run_id
     )
-    return SingleResponse[BenefitsRisksView](data=view)
+    return SingleResponse[BenefitsRisksView](data=view, meta=Meta(report_run_id=view.report_run_id))
 
 
 # -- Market ----------------------------------------------------------------
@@ -141,7 +144,7 @@ def get_index_overview(
     overview, refresh_task_id = service.build_index_overview(reader=reader, refresh=refresh)
     return SingleResponse[IndexOverview](
         data=overview,
-        meta=Meta(refresh_task_id=refresh_task_id),
+        meta=Meta(refresh_task_id=refresh_task_id, report_run_id=overview.report_run_id),
     )
 
 
@@ -154,7 +157,7 @@ def get_index_intraday(
     view, refresh_task_id = service.build_index_intraday(reader=reader, code=code, refresh=refresh)
     return SingleResponse[IndexIntradayView](
         data=view,
-        meta=Meta(refresh_task_id=refresh_task_id),
+        meta=Meta(refresh_task_id=refresh_task_id, report_run_id=view.report_run_id),
     )
 
 
@@ -169,7 +172,7 @@ def get_market_stocks(
     payload = service.build_market_stocks(
         reader=reader, page=page, page_size=page_size, keyword=keyword, refresh=refresh
     )
-    return SingleResponse[MarketStocksList](data=payload)
+    return SingleResponse[MarketStocksList](data=payload, meta=Meta(report_run_id=payload.report_run_id))
 
 
 @router.get("/market/concept-radar", response_model=ListResponse[ConceptRadarItem])
@@ -179,11 +182,11 @@ def get_concept_radar(
     reader: service.ReportRuntimeReader = Depends(get_report_reader),
 ) -> ListResponse[ConceptRadarItem]:
     _ = refresh
-    items, data_state = service.build_concept_radar(reader=reader, limit=limit)
+    items, data_state, report_run_id = service.build_concept_radar(reader=reader, limit=limit)
     return ListResponse[ConceptRadarItem](
         data=items,
         pagination=ListPagination(limit=limit, offset=0, total=len(items), has_more=False),
-        meta=Meta(data_state=data_state.value),
+        meta=Meta(data_state=data_state.value, report_run_id=report_run_id),
     )
 
 
@@ -195,9 +198,9 @@ def get_market_warnings(
     reader: service.ReportRuntimeReader = Depends(get_report_reader),
 ) -> ListResponse[MarketWarning]:
     _ = refresh
-    items, data_state = service.build_market_warnings(reader=reader, limit=limit, severity=severity)
+    items, data_state, report_run_id = service.build_market_warnings(reader=reader, limit=limit, severity=severity)
     return ListResponse[MarketWarning](
         data=items,
         pagination=ListPagination(limit=limit, offset=0, total=len(items), has_more=False),
-        meta=Meta(data_state=data_state.value),
+        meta=Meta(data_state=data_state.value, report_run_id=report_run_id),
     )

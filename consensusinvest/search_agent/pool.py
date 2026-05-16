@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import inspect
 from typing import Any
@@ -131,7 +131,8 @@ class SearchAgentPool:
         skipped_count = 0
         found_count = 0
 
-        for source in task.scope.sources:
+        sources = tuple(task.scope.sources)
+        for index, source in enumerate(sources):
             if results_left is not None and results_left <= 0:
                 self.repository.upsert_source_status(
                     task_id,
@@ -151,6 +152,10 @@ class SearchAgentPool:
                 skipped_count += 1
                 continue
 
+            source_results_left = _source_result_limit(
+                results_left,
+                remaining_sources=len(sources) - index,
+            )
             if provider_calls_left <= 0:
                 self.repository.upsert_source_status(
                     task_id,
@@ -173,6 +178,7 @@ class SearchAgentPool:
             try:
                 provider = self._provider_for(source)
                 provider_calls_left -= 1
+                provider_task = _task_with_max_results(task, source_results_left)
                 worker_id = _worker_id(task_id, source)
                 self.repository.upsert_source_status(task_id, source, SourceStatus.RUNNING)
                 self.repository.append_event(
@@ -185,23 +191,23 @@ class SearchAgentPool:
                     },
                 )
                 response = _normalize_provider_response(
-                    _call_search(provider, envelope, source, task),
+                    _call_search(provider, envelope, source, provider_task),
                     source,
                     task_id,
                 )
                 response, expansion_calls_used = self._apply_expansions(
                     task_id,
-                    task,
+                    provider_task,
                     envelope,
                     source,
                     response,
                     provider_calls_left,
-                    results_left,
+                    source_results_left,
                 )
                 provider_calls_left -= expansion_calls_used
-                response = _limit_response(response, results_left)
+                response = _limit_response(response, source_results_left)
                 self._append_item_found_events(task_id, source, response)
-                ingested_count = self._ingest(envelope, task_id, task, source, response)
+                ingested_count = self._ingest(envelope, task_id, provider_task, source, response)
                 found_count += len(response.items)
                 if results_left is not None:
                     results_left -= len(response.items)
@@ -756,6 +762,18 @@ def _limit_response(
         source_type=response.source_type,
         completed_at=response.completed_at,
     )
+
+
+def _source_result_limit(results_left: int | None, *, remaining_sources: int) -> int | None:
+    if results_left is None:
+        return None
+    return max(1, results_left // max(remaining_sources, 1))
+
+
+def _task_with_max_results(task: SearchTask, max_results: int | None) -> SearchTask:
+    if max_results == task.scope.max_results:
+        return task
+    return replace(task, scope=replace(task.scope, max_results=max_results))
 
 
 def _worker_id(task_id: str, source: str) -> str:

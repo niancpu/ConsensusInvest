@@ -19,10 +19,7 @@ from .projections import (
     _trend,
 )
 from .refresh import (
-    _market_refresh_can_run_now,
     _request_market_refresh,
-    _run_refresh_task_once,
-    _search_task_status,
 )
 from .report_runs import (
     _input_refs,
@@ -78,6 +75,7 @@ def build_index_overview(
         )
 
     overview = IndexOverview(
+        report_run_id=report_run_id,
         indices=indices,
         market_sentiment=MarketSentiment(
             label="未知",
@@ -114,6 +112,10 @@ def build_index_overview(
         output_snapshot=_jsonable(overview),
         limitations=_market_limitations(),
         refresh_task_id=refresh_task_id,
+        input_snapshot={
+            "view": "index_overview",
+            "refresh": refresh.value,
+        },
     )
     return overview, refresh_task_id
 
@@ -141,24 +143,10 @@ def build_index_intraday(
             report_run_id=report_run_id,
             metadata={"code": normalized_code, "ticker": ticker},
         )
-        if (
-            refresh_task_id
-            and _market_refresh_can_run_now(reader.search_pool, market_view="index_intraday")
-            and _run_refresh_task_once(reader, refresh_task_id)
-        ):
-            matching = _index_intraday_snapshots(reader, normalized_code, ticker)
-            points = _intraday_points_from_snapshots(matching)
-            if points:
-                data_state = DataState.READY
-            elif _search_task_status(reader, refresh_task_id) in {"failed", "cancelled"}:
-                data_state = DataState.FAILED
-            else:
-                data_state = DataState.MISSING
-        elif refresh_task_id and _search_task_status(reader, refresh_task_id) in {"failed", "cancelled"}:
-            data_state = DataState.FAILED
 
     latest = matching[0] if matching else None
     view = IndexIntradayView(
+        report_run_id=report_run_id,
         code=normalized_code,
         name=str(latest.metrics.get("name") or _index_name(normalized_code)) if latest else _index_name(normalized_code),
         trade_date=_trade_date(points, latest),
@@ -194,6 +182,12 @@ def build_index_intraday(
         output_snapshot=output_snapshot,
         limitations=_market_limitations(),
         refresh_task_id=refresh_task_id,
+        input_snapshot={
+            "view": "index_intraday",
+            "code": code,
+            "normalized_code": normalized_code,
+            "refresh": refresh.value,
+        },
     )
     return view, refresh_task_id
 
@@ -247,6 +241,7 @@ def build_market_stocks(
             metadata={"page": page, "page_size": page_size, "keyword": keyword},
         )
     payload = MarketStocksList(
+        report_run_id=report_run_id,
         list=data_rows,
         pagination=MarketStocksPagination(page=page, page_size=page_size, total=total),
         data_state=data_state,
@@ -271,12 +266,19 @@ def build_market_stocks(
         output_snapshot=_jsonable(payload),
         limitations=_market_limitations(),
         refresh_task_id=refresh_task_id,
+        input_snapshot={
+            "view": "market_stocks",
+            "page": page,
+            "page_size": page_size,
+            "keyword": keyword,
+            "refresh": refresh.value,
+        },
     )
     return payload
 
 
 
-def build_concept_radar(*, reader: ReportRuntimeReader, limit: int) -> tuple[list[ConceptRadarItem], DataState]:
+def build_concept_radar(*, reader: ReportRuntimeReader, limit: int) -> tuple[list[ConceptRadarItem], DataState, str]:
     if limit < 1 or limit > 100:
         raise ValidationError("Query parameter `limit` must be between 1 and 100.")
     snapshots = reader.market_snapshots(("concept_heat",), limit=limit)
@@ -293,13 +295,17 @@ def build_concept_radar(*, reader: ReportRuntimeReader, limit: int) -> tuple[lis
         for snapshot in snapshots
     ]
     data_state = DataState.READY if items else DataState.MISSING
-    _save_market_list_run(
+    report_run_id = _save_market_list_run(
         reader=reader,
         ticker="MARKET_CONCEPT_RADAR",
         items=items,
         data_state=data_state,
+        input_snapshot={
+            "view": "concept_radar",
+            "limit": limit,
+        },
     )
-    return items, data_state
+    return items, data_state, report_run_id
 
 
 
@@ -308,7 +314,7 @@ def build_market_warnings(
     reader: ReportRuntimeReader,
     limit: int,
     severity: str | None,
-) -> tuple[list[MarketWarning], DataState]:
+) -> tuple[list[MarketWarning], DataState, str]:
     if limit < 1 or limit > 100:
         raise ValidationError("Query parameter `limit` must be between 1 and 100.")
     if severity and severity not in {"info", "notice", "alert"}:
@@ -339,10 +345,15 @@ def build_market_warnings(
             )
         )
     data_state = DataState.READY if items else DataState.MISSING
-    _save_market_list_run(
+    report_run_id = _save_market_list_run(
         reader=reader,
         ticker="MARKET_WARNINGS",
         items=items,
         data_state=data_state,
+        input_snapshot={
+            "view": "market_warnings",
+            "limit": limit,
+            "severity": severity,
+        },
     )
-    return items, data_state
+    return items, data_state, report_run_id

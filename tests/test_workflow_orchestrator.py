@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 
 from consensusinvest.agent_swarm import AgentSwarmRuntime, JudgeRuntime
-from consensusinvest.agent_swarm.models import AgentArgumentDraft, RoundSummaryDraft
+from consensusinvest.agent_swarm.models import (
+    AgentArgumentDraft,
+    AgentSwarmRunOutcome,
+    EvidenceGap,
+    RoundSummaryDraft,
+    SuggestedSearch,
+)
 from consensusinvest.evidence_store import FakeEvidenceStoreClient
 from consensusinvest.runtime import InternalCallEnvelope
 from consensusinvest.search_agent import SearchAgentPool
@@ -32,6 +38,35 @@ class FakeLLMProvider:
 
     def complete_json(self, **kwargs):
         raise AssertionError("preflight should stop before model calls")
+
+
+class GapThenCompletedSwarm:
+    def __init__(self, *, evidence_store: FakeEvidenceStoreClient) -> None:
+        self.delegate = AgentSwarmRuntime(evidence_store=evidence_store)
+        self.repository = self.delegate.repository
+        self.calls = 0
+
+    def run(self, envelope, payload):
+        self.calls += 1
+        if self.calls == 1:
+            return AgentSwarmRunOutcome(
+                task_id="agent_swarm_gap_001",
+                status="insufficient_evidence",
+                accepted_at=_analysis_time(),
+                gaps=(
+                    EvidenceGap(
+                        gap_type="missing_cash_flow_check",
+                        description="Debate needs a controlled search request for cash-flow corroboration.",
+                        suggested_search=SuggestedSearch(
+                            target_entity_ids=("ent_company_002594",),
+                            evidence_types=("company_news",),
+                            lookback_days=30,
+                            keywords=("002594", "cash flow corroboration"),
+                        ),
+                    ),
+                ),
+            )
+        return self.delegate.run(envelope, payload)
 
 
 def _analysis_time() -> datetime:
@@ -128,7 +163,13 @@ def test_workflow_orchestrator_runs_swarm_judge_and_builds_trace() -> None:
     assert event_types.index("judge_tool_call_completed") < event_types.index("judgment_completed")
     nodes, edges = service.trace(run.workflow_run_id)
     assert any(node.node_type == "judgment" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:judge" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:bull_v1" for node in nodes)
+    assert any(node.node_type == "agent_run" for node in nodes)
     assert any(node.node_type == "round_summary" for node in nodes)
+    assert any(edge.edge_type == "executes" for edge in edges)
+    assert any(edge.edge_type == "produces_argument" for edge in edges)
+    assert any(edge.edge_type == "produces_judgment" and edge.to_node_id == run.judgment_id for edge in edges)
     assert any(edge.edge_type == "uses_argument" for edge in edges)
     assert any(edge.edge_type == "uses_round_summary" for edge in edges)
 
@@ -157,6 +198,70 @@ def test_workflow_orchestrator_marks_insufficient_without_direct_search() -> Non
     assert run.evidence_gaps
     events = service.list_events(run.workflow_run_id)
     assert [event.event_type for event in events][-1] == "workflow_failed"
+
+
+def test_workflow_orchestrator_fills_debate_search_intent_and_continues() -> None:
+    store = FakeEvidenceStoreClient()
+    provider = MockSearchProvider(
+        items_by_source={
+            "tavily": (
+                {
+                    "external_id": "gap_fill_cash_flow_001",
+                    "title": "BYD cash flow corroboration",
+                    "url": "https://example.com/gap-fill/cash-flow",
+                    "content": "BYD cash flow corroboration collected through controlled search.",
+                    "publish_time": "2026-05-12T14:00:00+00:00",
+                    "source_quality_hint": 0.83,
+                    "metadata": {"evidence_type": "company_news"},
+                },
+            )
+        }
+    )
+    search_pool = SearchAgentPool(providers={"tavily": provider}, evidence_store=store)
+    agent_swarm = GapThenCompletedSwarm(evidence_store=store)
+    service = WorkflowOrchestrator(
+        evidence_store=store,
+        agent_swarm=agent_swarm,
+        judge=JudgeRuntime(evidence_store=store, repository=agent_swarm.repository),
+        acquisition=EvidenceAcquisitionService(search_pool=search_pool),
+    )
+
+    queued = service.create_run(
+        WorkflowRunCreate(
+            ticker="002594",
+            stock_code="002594.SZ",
+            entity_id="ent_company_002594",
+            analysis_time=_analysis_time(),
+            workflow_config_id="mvp_bull_judge_v1",
+            query=WorkflowQuery(sources=("tavily",), evidence_types=("company_news",)),
+            options=WorkflowOptions(auto_run=False),
+        )
+    )
+    _seed_store(queued.workflow_run_id, store)
+
+    run = service.run_once(queued.workflow_run_id)
+
+    assert run.status == "completed"
+    assert run.failure_code is None
+    assert run.search_task_ids
+    assert agent_swarm.calls == 2
+    assert provider.calls == [("search", "tavily")]
+    snapshot = service.snapshot(run.workflow_run_id)
+    assert len(snapshot["evidence_items"]) == 3
+    assert snapshot["judgment"] is not None
+    events = [event.event_type for event in service.list_events(run.workflow_run_id)]
+    assert "workflow_failed" not in events
+    assert events.index("connector_progress") < events.index("agent_argument_completed")
+    nodes, edges = service.trace(run.workflow_run_id)
+    search_requests = [node for node in nodes if node.node_type == "search_request"]
+    assert any(node.title == "辩论补充搜索" for node in search_requests)
+    assert any(
+        "reason=agent_swarm_request_search" in node.summary
+        and "gap_type=missing_cash_flow_check" in node.summary
+        for node in search_requests
+    )
+    assert any(edge.edge_type == "requests_search" for edge in edges)
+    assert any(edge.edge_type == "search_result" for edge in edges)
 
 
 def test_workflow_orchestrator_does_not_select_evidence_from_other_workflow() -> None:
@@ -313,6 +418,9 @@ def test_workflow_orchestrator_auto_collects_initial_evidence_before_swarm() -> 
     events = [event.event_type for event in service.list_events(run.workflow_run_id)]
     assert "connector_started" in events
     assert "agent_argument_completed" in events
+    nodes, edges = service.trace(run.workflow_run_id)
+    assert any(node.node_type == "search_request" and node.title == "初始证据采集" for node in nodes)
+    assert any(edge.edge_type == "search_result" for edge in edges)
 
 
 def test_workflow_orchestrator_auto_run_starts_in_background() -> None:
@@ -399,10 +507,18 @@ def test_workflow_orchestrator_trace_returns_running_partial_graph() -> None:
     nodes, edges = service.trace(run.workflow_run_id)
 
     assert any(node.node_type == "agent_argument" for node in nodes)
+    assert any(node.node_type == "agent" and node.node_id == "agent:bull_v1" for node in nodes)
+    assert any(node.node_type == "agent_run" and node.node_id == agent_run.agent_run_id for node in nodes)
     assert any(node.node_type == "round_summary" for node in nodes)
     assert any(node.node_type == "evidence" for node in nodes)
     assert any(node.node_type == "raw_item" for node in nodes)
     assert not any(node.node_type == "judgment" for node in nodes)
+    assert any(
+        edge.from_node_id == agent_run.agent_run_id
+        and edge.to_node_id == argument.agent_argument_id
+        and edge.edge_type == "produces_argument"
+        for edge in edges
+    )
     assert any(edge.from_node_id == summary.round_summary_id for edge in edges)
     assert any(edge.to_node_id == evidence_ids[0] for edge in edges)
 
@@ -552,4 +668,5 @@ def test_workflow_orchestrator_marks_agent_runtime_error_as_workflow_failed() ->
     failed_event = service.list_events(run.workflow_run_id)[-1]
     assert failed_event.event_type == "workflow_failed"
     assert failed_event.payload["code"] == "agent_swarm_failed"
+    assert failed_event.payload["failed_stage"] == "debate"
     assert "没有可用的模型 API key" in failed_event.payload["message"]

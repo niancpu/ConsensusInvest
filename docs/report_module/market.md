@@ -36,6 +36,7 @@ GET /api/v1/market/index-overview?refresh=stale
 ```json
 {
   "data": {
+    "report_run_id": "rpt_20260513_market_0001",
     "indices": [
       {
         "name": "上证指数",
@@ -57,7 +58,8 @@ GET /api/v1/market/index-overview?refresh=stale
     "updated_at": "2026-05-13T11:05:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_120001"
+    "request_id": "req_20260513_120001",
+    "report_run_id": "rpt_20260513_market_0001"
   }
 }
 ```
@@ -67,6 +69,7 @@ GET /api/v1/market/index-overview?refresh=stale
 | 字段 | 说明 |
 | --- | --- |
 | `snapshot_id` | 主系统市场快照 ID，证明行情值来自已入库结果。 |
+| `report_run_id` | Report Module 本次视图生成运行 ID，用于回查 `report_runs` 输入输出快照。 |
 | `data_state` | `ready`、`stale`、`partial`、`refreshing`。 |
 | `refresh_task_id` | 异步刷新任务 ID；只有后端触发刷新时返回。 |
 | `market_sentiment` | 基于 MarketSnapshot 的市场情绪视图，不等于 Judge 结论。 |
@@ -94,6 +97,7 @@ GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale
 ```json
 {
   "data": {
+    "report_run_id": "rpt_20260513_index_intraday_0001",
     "code": "000001.SH",
     "name": "上证指数",
     "trade_date": "2026-05-13",
@@ -118,7 +122,8 @@ GET /api/v1/market/index-intraday?code=000001.SH&refresh=stale
     "updated_at": "2026-05-13T15:00:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_120005"
+    "request_id": "req_20260513_120005",
+    "report_run_id": "rpt_20260513_index_intraday_0001"
   }
 }
 ```
@@ -140,6 +145,7 @@ GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
 ```json
 {
   "data": {
+    "report_run_id": "rpt_20260513_market_stocks_0001",
     "list": [
       {
         "stock_code": "002594.SZ",
@@ -163,7 +169,8 @@ GET /api/v1/market/stocks?page=1&page_size=20&keyword={keyword}&refresh=stale
     "refresh_task_id": null
   },
   "meta": {
-    "request_id": "req_20260513_120010"
+    "request_id": "req_20260513_120010",
+    "report_run_id": "rpt_20260513_market_stocks_0001"
   }
 }
 ```
@@ -197,6 +204,7 @@ GET /api/v1/market/concept-radar?limit=20&refresh=stale
   ],
   "meta": {
     "request_id": "req_20260513_120020",
+    "report_run_id": "rpt_20260513_concept_radar_0001",
     "data_state": "ready",
     "refresh_task_id": null
   }
@@ -234,6 +242,7 @@ GET /api/v1/market/warnings?limit=10&severity=notice&refresh=stale
   ],
   "meta": {
     "request_id": "req_20260513_120030",
+    "report_run_id": "rpt_20260513_market_warnings_0001",
     "data_state": "ready",
     "refresh_task_id": null
   }

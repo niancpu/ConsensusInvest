@@ -18,8 +18,8 @@ GET /api/v1/workflow-configs
     {
       "workflow_config_id": "mvp_bull_judge_v1",
       "name": "MVP Bull + Judge",
-      "description": "AkShare/TuShare/Tavily/Exa + Evidence Structurer + Bull Agent + Round Summary + Judge",
-      "collectors": ["akshare", "tushare", "tavily", "exa"],
+      "description": "Tavily/Exa/AkShare/TuShare + Evidence Structurer + Bull Agent + Round Summary + Judge",
+      "collectors": ["tavily", "exa", "akshare", "tushare"],
       "agents": ["evidence_structurer_v1", "bull_v1", "round_summary_v1", "judge_v1"],
       "debate_rounds": 3,
       "enabled": true

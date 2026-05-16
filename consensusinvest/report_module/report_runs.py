@@ -53,6 +53,11 @@ def _save_benefits_risks_run(
         output_snapshot=_jsonable(view),
         limitations=_stock_limitations(report_mode),
         refresh_task_id=None,
+        input_snapshot={
+            "view": "benefits_risks",
+            "stock_code": view.stock_code,
+            "workflow_run_id": view.workflow_run_id,
+        },
     )
 
 def _save_report_run(
@@ -70,6 +75,7 @@ def _save_report_run(
     output_snapshot: dict[str, Any],
     limitations: list[str],
     refresh_task_id: str | None,
+    input_snapshot: dict[str, Any] | None = None,
 ) -> None:
     if reader.report_repository is None:
         return
@@ -92,6 +98,7 @@ def _save_report_run(
             judgment_id=judgment_id,
             entity_id=entity_id,
             refresh_task_id=refresh_task_id,
+            details={"input_snapshot": input_snapshot or {}},
             started_at=now,
             completed_at=now if status == "completed" else None,
         )
@@ -148,11 +155,13 @@ def _save_market_list_run(
     ticker: str,
     items: list[ConceptRadarItem] | list[MarketWarning],
     data_state: DataState,
-) -> None:
+    input_snapshot: dict[str, Any] | None = None,
+) -> str:
     output_items = [_jsonable(item) for item in items]
+    report_run_id = _report_run_id(reader, ticker)
     _save_report_run(
         reader=reader,
-        report_run_id=_report_run_id(reader, ticker),
+        report_run_id=report_run_id,
         ticker=ticker,
         stock_code=None,
         report_mode=ReportMode.REPORT_GENERATION,
@@ -167,12 +176,15 @@ def _save_market_list_run(
             judgment_id=None,
         ),
         output_snapshot={
+            "report_run_id": report_run_id,
             "items": output_items,
             "data_state": data_state.value,
         },
         limitations=_market_limitations(),
         refresh_task_id=None,
+        input_snapshot=input_snapshot,
     )
+    return report_run_id
 
 def _report_run_status(data_state: DataState) -> str:
     if data_state in {DataState.PENDING_REFRESH, DataState.REFRESHING}:

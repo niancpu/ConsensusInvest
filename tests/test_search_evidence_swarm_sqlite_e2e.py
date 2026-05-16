@@ -181,7 +181,7 @@ class SearchEvidenceSwarmSQLiteE2ETests(unittest.TestCase):
             self.assertIn("agent_argument", source_types)
             self.assertIn("round_summary", source_types)
             self.assertIn("judgment", source_types)
-            self.assertEqual(14, len(refs))
+            self.assertEqual(20, len(refs))
             self.assertEqual({"ev_000001", "ev_000002"}, {ref.evidence_id for ref in refs})
             self.assertEqual({1, 2, 3}, {ref.round for ref in refs if ref.source_type != "judgment"})
             self.assertEqual({None}, {ref.round for ref in refs if ref.source_type == "judgment"})

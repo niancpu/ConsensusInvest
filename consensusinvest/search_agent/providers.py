@@ -628,8 +628,6 @@ def _akshare_request_specs(
     start_date, end_date = _date_bounds_yyyymmdd(envelope, task)
     specs: list[tuple[str, Any]] = []
     market_view = _market_view(task)
-    if not evidence_types or evidence_types & {"company_news", "industry_news"}:
-        specs.append(("stock_news_em", _call_provider_method(akshare, "stock_news_em", symbol=ticker)))
     if evidence_types & {"financial_report"}:
         specs.append(
             (

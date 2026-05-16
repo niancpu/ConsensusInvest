@@ -1,10 +1,21 @@
 import type { AgentArgument, RoundSummary } from '../../../types/workflow';
 import type { EvidenceDetail, RawItemDetail } from '../../../types/evidence';
+import type { TraceNodeType } from '../../../types/trace';
+
+type GenericSelectedNode<T extends TraceNodeType> = {
+  node_id: string;
+  node_type: T;
+  title: string;
+  summary: string;
+};
 
 export type SelectedNode =
-  | { node_id: string; node_type: 'judgment'; title: string; summary: string }
-  | { node_id: string; node_type: 'round_summary'; title: string; summary: string; detail?: RoundSummary }
-  | { node_id: string; node_type: 'agent_argument'; title: string; summary: string; detail?: AgentArgument }
+  | GenericSelectedNode<'agent'>
+  | GenericSelectedNode<'agent_run'>
+  | GenericSelectedNode<'search_request'>
+  | GenericSelectedNode<'judgment'>
+  | (GenericSelectedNode<'round_summary'> & { detail?: RoundSummary })
+  | (GenericSelectedNode<'agent_argument'> & { detail?: AgentArgument })
   | {
       node_id: string;
       node_type: 'evidence';
@@ -14,4 +25,4 @@ export type SelectedNode =
       rawDetail?: RawItemDetail;
       rawDetailError?: string;
     }
-  | { node_id: string; node_type: 'raw_item'; title: string; summary: string; detail?: RawItemDetail };
+  | (GenericSelectedNode<'raw_item'> & { detail?: RawItemDetail });

@@ -146,11 +146,10 @@ def test_market_index_intraday_refresh_runs_search_agent_and_reprojects_snapshot
     view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
 
     assert refresh_task_id == "st_intraday_refresh_001"
-    assert reader.search_pool.ran_task_ids == ["st_intraday_refresh_001"]
-    assert view.data_state == "ready"
-    assert view.points[0].time == "09:30"
-    assert [point.value for point in view.points] == [3120.1, 3121.5]
-    assert view.snapshot_ids
+    assert reader.search_pool.ran_task_ids == []
+    assert view.data_state == "pending_refresh"
+    assert view.points == []
+    assert view.snapshot_ids == []
     _, search_task = reader.search_pool.calls[0]
     assert search_task.scope.sources == ("akshare",)
     repo.close()
@@ -179,7 +178,7 @@ def test_market_index_intraday_existing_failed_refresh_reports_failed(tmp_path: 
     view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
 
     assert refresh_task_id == "st_failed_intraday"
-    assert view.data_state == "failed"
+    assert view.data_state == "pending_refresh"
     assert view.points == []
     repo.close()
 
@@ -192,7 +191,7 @@ def test_market_index_intraday_refresh_exception_reports_failed(tmp_path: Path) 
     view, refresh_task_id = build_index_intraday(reader=reader, code="000001.SH", refresh=RefreshPolicy.STALE)
 
     assert refresh_task_id == "st_raising_intraday"
-    assert view.data_state == "failed"
+    assert view.data_state == "pending_refresh"
     assert view.points == []
     repo.close()
 
@@ -415,6 +414,11 @@ def test_stock_analysis_ignores_incomplete_workflow_rows_when_selecting_latest_j
     assert view.competition_landscape == "头部集中度提升"
     assert view.referenced_evidence_ids == ["ev_000001"]
     assert view.links.entity == "/api/v1/entities/ent_industry_nev"
+    run = repo.get_run(view.report_run_id)
+    assert run is not None
+    assert run.input_refs["evidence_ids"] == ["ev_000001"]
+    assert run.output_snapshot["report_run_id"] == view.report_run_id
+    assert run.details["input_snapshot"]["view"] == "industry_details"
     repo.close()
 
 
@@ -435,6 +439,11 @@ def test_event_impact_ranking_reads_objective_event_evidence(tmp_path: Path) -> 
     assert view.items[0].direction is None
     assert view.items[0].evidence_ids == ["ev_000001"]
     assert view.items[0].impact_level == "high"
+    run = repo.get_run(view.report_run_id)
+    assert run is not None
+    assert run.input_refs["evidence_ids"] == ["ev_000001"]
+    assert run.output_snapshot["report_run_id"] == view.report_run_id
+    assert run.details["input_snapshot"]["view"] == "event_impact_ranking"
     repo.close()
 
 
@@ -516,16 +525,18 @@ def test_concept_radar_report_run_stores_snapshot_and_evidence_refs(tmp_path: Pa
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     reader = _reader_with_concept_snapshot(repo)
 
-    items, data_state = build_concept_radar(reader=reader, limit=20)
+    items, data_state, report_run_id = build_concept_radar(reader=reader, limit=20)
     run = repo.get_run(repo.list_runs(limit=1)[0].report_run_id)
 
     assert data_state.value == "ready"
     assert run is not None
+    assert report_run_id == run.report_run_id
     assert run.status == "completed"
     assert run.ticker == "MARKET_CONCEPT_RADAR"
     assert run.input_refs["market_snapshot_ids"] == items[0].snapshot_ids
     assert run.input_refs["evidence_ids"] == ["ev_concept_001"]
     assert run.output_snapshot["data_state"] == "ready"
+    assert run.output_snapshot["report_run_id"] == report_run_id
     assert run.output_snapshot["items"][0]["snapshot_ids"] == items[0].snapshot_ids
     assert run.output_snapshot["items"][0]["evidence_ids"] == items[0].evidence_ids
     assert run.limitations
@@ -536,16 +547,18 @@ def test_market_warnings_report_run_stores_snapshot_and_evidence_refs(tmp_path: 
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     reader = _reader_with_warning_snapshot(repo)
 
-    items, data_state = build_market_warnings(reader=reader, limit=20, severity="notice")
+    items, data_state, report_run_id = build_market_warnings(reader=reader, limit=20, severity="notice")
     run = repo.get_run(repo.list_runs(limit=1)[0].report_run_id)
 
     assert data_state.value == "ready"
     assert run is not None
+    assert report_run_id == run.report_run_id
     assert run.status == "completed"
     assert run.ticker == "MARKET_WARNINGS"
     assert run.input_refs["market_snapshot_ids"] == items[0].snapshot_ids
     assert run.input_refs["evidence_ids"] == ["ev_warning_001"]
     assert run.output_snapshot["data_state"] == "ready"
+    assert run.output_snapshot["report_run_id"] == report_run_id
     assert run.output_snapshot["items"][0]["snapshot_ids"] == items[0].snapshot_ids
     assert run.output_snapshot["items"][0]["evidence_ids"] == items[0].evidence_ids
     assert run.refresh_task_id is None
@@ -556,8 +569,8 @@ def test_market_list_views_write_report_run_when_missing(tmp_path: Path) -> None
     repo = SQLiteReportRunRepository(tmp_path / "report_runs.sqlite3")
     reader = _empty_reader(repo)
 
-    concept_items, concept_state = build_concept_radar(reader=reader, limit=20)
-    warning_items, warning_state = build_market_warnings(reader=reader, limit=20, severity=None)
+    concept_items, concept_state, _ = build_concept_radar(reader=reader, limit=20)
+    warning_items, warning_state, _ = build_market_warnings(reader=reader, limit=20, severity=None)
     runs = repo.list_runs(limit=10)
 
     assert concept_items == []
@@ -568,7 +581,11 @@ def test_market_list_views_write_report_run_when_missing(tmp_path: Path) -> None
     for run in runs:
         assert run.input_refs["market_snapshot_ids"] == []
         assert run.input_refs["evidence_ids"] == []
-        assert run.output_snapshot == {"items": [], "data_state": "missing"}
+        assert run.output_snapshot == {
+            "report_run_id": run.report_run_id,
+            "items": [],
+            "data_state": "missing",
+        }
         assert run.refresh_task_id is None
     repo.close()
 

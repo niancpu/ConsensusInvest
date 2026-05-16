@@ -8,6 +8,7 @@ export type SingleResponse<T> = {
     request_id?: string;
     data_state?: string;
     refresh_task_id?: string | null;
+    report_run_id?: string | null;
   };
 };
 
@@ -23,6 +24,7 @@ export type ListResponse<T> = {
     request_id?: string;
     data_state?: string;
     refresh_task_id?: string | null;
+    report_run_id?: string | null;
   };
 };
 

@@ -14,7 +14,7 @@ class WorkflowModel(BaseModel):
 
 class WorkflowQueryRequest(WorkflowModel):
     lookback_days: int = 30
-    sources: list[str] = Field(default_factory=lambda: ["akshare", "tavily", "exa"])
+    sources: list[str] = Field(default_factory=lambda: ["tavily", "exa", "akshare"])
     evidence_types: list[str] = Field(default_factory=lambda: ["financial_report", "company_news", "industry_news"])
     max_results: int = 50
 
@@ -196,7 +196,16 @@ class WorkflowSnapshotView(WorkflowModel):
 
 
 class TraceNodeView(WorkflowModel):
-    node_type: Literal["judgment", "agent_argument", "evidence", "raw_item", "round_summary"]
+    node_type: Literal[
+        "judgment",
+        "agent",
+        "agent_run",
+        "search_request",
+        "agent_argument",
+        "evidence",
+        "raw_item",
+        "round_summary",
+    ]
     node_id: str
     title: str
     summary: str

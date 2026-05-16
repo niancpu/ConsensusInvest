@@ -176,6 +176,7 @@ class IndustryLinks(TraceableModel):
 class IndustryDetailsView(TraceableModel):
     stock_code: str
     ticker: str
+    report_run_id: str
     industry_entity_id: str
     industry_name: str
     policy_support_level: Literal["low", "medium", "high"]
@@ -204,6 +205,7 @@ class EventImpactItem(TraceableModel):
 class EventImpactRankingView(TraceableModel):
     stock_code: str
     ticker: str
+    report_run_id: str
     ranker: str
     items: list[EventImpactItem]
     updated_at: str
@@ -242,6 +244,7 @@ class MarketSentiment(TraceableModel):
 
 
 class IndexOverview(TraceableModel):
+    report_run_id: str
     indices: list[IndexQuote]
     market_sentiment: MarketSentiment
     data_state: DataState
@@ -260,6 +263,7 @@ class IndexIntradayPoint(TraceableModel):
 
 
 class IndexIntradayView(TraceableModel):
+    report_run_id: str
     code: str
     name: str
     trade_date: str
@@ -297,6 +301,7 @@ class MarketStocksPagination(TraceableModel):
 
 
 class MarketStocksList(TraceableModel):
+    report_run_id: str
     list: list[MarketStockRow]  # noqa: A003 — field name fixed by API contract
     pagination: MarketStocksPagination
     data_state: DataState

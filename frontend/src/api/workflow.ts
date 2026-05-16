@@ -29,7 +29,7 @@ export async function createWorkflowRun(request: CreateWorkflowRequest): Promise
     workflow_config_id: request.workflow_config_id,
     query: {
       lookback_days: 30,
-      sources: request.sources ?? ['akshare', 'tavily', 'exa'],
+      sources: request.sources ?? ['tavily', 'exa', 'akshare'],
       evidence_types: request.evidence_types ?? ['financial_report', 'company_news', 'industry_news'],
       max_results: 50,
     },

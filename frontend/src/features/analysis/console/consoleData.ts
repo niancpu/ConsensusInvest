@@ -3,6 +3,7 @@ import type { WorkflowSnapshot } from '../../../types/workflow';
 type StageDisplay = {
   currentIndex: number;
   description: string;
+  failedStageLabel: string;
   label: string;
   progressLabel: string;
   steps: ReadonlyArray<{
@@ -119,13 +120,15 @@ export function agentRowsFromSnapshot(snapshot: WorkflowSnapshot): string[][] {
   return snapshot.agent_runs.map((run) => [run.agent_id, run.status]);
 }
 
-export function getStageDisplay(stage: string, status: string): StageDisplay {
+export function getStageDisplay(stage: string, status: string, failedStage = ''): StageDisplay {
   const normalizedStage = stage || status || 'idle';
+  const effectiveStage = normalizedStage === 'failed' && failedStage ? failedStage : normalizedStage;
   const stageMeta = WORKFLOW_STAGE_LABELS[normalizedStage] ?? {
     label: normalizedStage,
     description: '后端返回了未登记的阶段，按原始 stage 显示。',
   };
-  const rawIndex = WORKFLOW_STAGE_STEPS.findIndex((step) => step.key === normalizedStage);
+  const failedStageLabel = failedStage ? labelForStage(failedStage) : '';
+  const rawIndex = WORKFLOW_STAGE_STEPS.findIndex((step) => step.key === effectiveStage);
   const currentIndex = rawIndex >= 0 ? rawIndex : -1;
   const progressLabel =
     currentIndex >= 0 ? `${currentIndex + 1}/${WORKFLOW_STAGE_STEPS.length}` : '未匹配';
@@ -134,6 +137,7 @@ export function getStageDisplay(stage: string, status: string): StageDisplay {
   return {
     currentIndex,
     description: stageMeta.description,
+    failedStageLabel,
     label: stageMeta.label,
     progressLabel,
     steps: WORKFLOW_STAGE_STEPS.map((step, index) => ({
@@ -142,6 +146,10 @@ export function getStageDisplay(stage: string, status: string): StageDisplay {
     })),
     tone,
   };
+}
+
+export function labelForStage(stage: string): string {
+  return WORKFLOW_STAGE_LABELS[stage]?.label ?? stage;
 }
 
 function resolveStageTone(stage: string, status: string): StageDisplay['tone'] {

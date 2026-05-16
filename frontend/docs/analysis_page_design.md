@@ -46,9 +46,12 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 
 节点类型（与 `layout/traceGraph.ts` 对齐）：
 
+- `agent`
+- `agent_run`
 - `judgment`
 - `round_summary`
 - `agent_argument`
+- `search_request`
 - `evidence`
 - `raw_item`
 
@@ -61,8 +64,13 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 - `derived_from`
 - `cited`
 - `uses_round_summary`
+- `executes`
+- `produces_argument`
+- `produces_judgment`
+- `requests_search`
+- `search_result`
 
-`layout/traceGraph.ts:layoutTraceGraph` 把节点按 `judgment → round_summary → agent_argument → evidence → raw_item` 分行，把不在该枚举内的 edge_type 归一为 `cited`，连线统一走 `routeTraceEdge` 生成的 90° 折线。
+`layout/traceGraph.ts:layoutTraceGraph` 把节点按 `agent → agent_run → judgment → round_summary → agent_argument → search_request → evidence → raw_item` 分行。`agent` 表示实体，`agent_run` 表示 debate / judge 等执行动作；`search_request` 放在论证动作与 evidence 之间，用于区分 debate / judge 主动补搜产生的证据和初始自动采集证据。前端只展示这些节点的基础信息，不为 `agent / agent_run / search_request` 发起详情 API 请求。
 
 ## 2. 总体布局
 
@@ -78,8 +86,8 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 │ 刷新快照    │  - judgment                  │  - judgment       │
 │ Quote Strip│  - round_summary             │  - agent_argument │
 │ 数据源状态  │  - agent_argument            │  - evidence       │
-│ 代理模式    │  - evidence                  │  - raw_item       │
-│ 推理状态    │  - raw_item                  │                   │
+│ 代理模式    │  - search_request            │  - raw_item       │
+│ 推理状态    │  - evidence / raw_item       │                   │
 │ 错误 banner│                             │ 图例              │
 │            │ 运行事件（最近 8 条）          │                   │
 └────────────┴─────────────────────────────┴───────────────────┘
@@ -113,11 +121,11 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 - 画布尺寸来自 `layout/traceGraph.ts:layoutTraceGraph`，最小宽度 780px，并按最拥挤层级的节点数量横向扩展；
 - 背景 `<pattern id="grid">` 1px 黑虚线 62×62 网格；
 - 节点：`TraceNodeShape` 渲染矩形 + 中心标题 + 子标题（`node_type` + `score`）；只有 `traceNodeIds` 集合（来自后端 trace）内的节点 `isInteractive=true`，可点击 / 键盘 Enter / Space 触发；
-- 边：`polyline` + 中间 `rect` 背景框 + 等宽字体 `text` 标签（标签由 `labelForEdge` 给出 `arg / sup / ctr / ref / raw / sum / cite`）。
+- 边：`polyline` + 中间 `rect` 背景框 + 等宽字体 `text` 标签（标签由 `labelForEdge` 给出 `arg / sup / ctr / ref / raw / sum / run / arg+ / jud / qry / res / cite`）。
 
 布局算法 `layout/traceGraph.ts:layoutTraceGraph`：
 
-- 按 `judgment → round_summary → agent_argument → evidence → raw_item` 顺序分行；
+- 按 `agent → agent_run → judgment → round_summary → agent_argument → search_request → evidence → raw_item` 顺序分行；
 - 行间距 126px，行高基于 `NODE_SIZE_BY_TYPE`；
 - 每行内按实际画布宽度等分，Evidence / Raw Item 使用更紧凑节点与更短标题，画布溢出时由 `graph-board` 横向滚动；
 - 边路由 `routeTraceEdge`：同行 → 走带上下 lane 的 90° 折线；跨行 → 走「V-H-V」并按相邻层级分配 lane，错开水平段和节点连接点，避免大量边重叠在同一通道。
@@ -157,11 +165,12 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 
 - `agent_argument`：代理身份（`agent_id · role · 第 N 轮`）/ 论证内容（`argument` 全文）/ 置信度 / 支持证据 / 反驳证据 / 已声明局限；
 - `round_summary`：轮次 / 本轮摘要 / 参与代理 / 该轮论证 ID 列表（提示用户点击图上对应节点查看正文）/ 引用证据 / 争议证据；
+- `agent` / `agent_run` / `search_request`：只渲染顶部基础信息，不请求详情接口；
 - `evidence`：来源（`source · source_type`）/ 标题（可选）/ 客观摘要（`objective_summary || content`）/ 质量评分（来源 / 相关性 / 结构化置信度）/ 原始数据引用；
 - `raw_item`：来源 / 标题（可选）/ 链接（可选）/ 原始内容（`truncate(content, 360)`）/ 原始 Payload 节选（`<pre class="payload-block">` 渲染 `JSON.stringify(raw_payload, null, 2)`，截断 480 字符，最高 220px 滚动）/ 派生证据；
 - `judgment`：只渲染顶部一项；详情由 `JudgmentInspector` 接管。
 
-`NODE_TYPE_LABELS` 映射：`judgment→最终判断 / round_summary→本轮辩论 / agent_argument→代理论证 / evidence→证据 / raw_item→原始数据`。
+`NODE_TYPE_LABELS` 映射：`agent→Agent 实体 / agent_run→Agent 执行 / judgment→最终判断 / round_summary→本轮辩论 / agent_argument→代理论证 / search_request→搜索请求 / evidence→证据 / raw_item→原始数据`。
 
 `detail` 字段通过点击节点时按需拉取（接口实现在 `src/api/evidence.ts`，类型在 `src/types/`）：
 
@@ -172,6 +181,7 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
 | `agent_argument` | `getAgentArgument(id)` | `GET /api/v1/agent-arguments/{agent_argument_id}` |
 | `round_summary` | `getRoundSummary(id)` | `GET /api/v1/round-summaries/{round_summary_id}` |
 | `judgment` | — | 不另发请求；使用 snapshot 里的 `judgment` 交给 `JudgmentInspector` 展示 |
+| `agent / agent_run / search_request` | — | 不另发请求；只展示 trace 节点基础信息 |
 
 ### 5.3 JudgmentInspector
 
@@ -197,7 +207,7 @@ GET /api/v1/workflow-runs/{workflow_run_id}/trace
    - `ticker / stock_code`（同值，临时双发，等后端协议确认后取其一）；
    - `analysis_time`：默认 `new Date().toISOString()`；
    - `workflow_config_id`；
-   - `query`：`lookback_days=30`、`sources=[akshare,tavily,exa]`、`evidence_types=[financial_report,company_news,industry_news]`、`max_results=50`；
+   - `query`：`lookback_days=30`、`sources=[tavily,exa,akshare]`、`evidence_types=[financial_report,company_news,industry_news]`、`max_results=50`；
    - `options`：`stream=true, include_raw_payload=false, auto_run=true`。
 4. 创建成功 → `setWorkflowRunId(created.workflow_run_id)` → `loadWorkflowState(runId, 'replace_events')`；
 5. 失败 → `connection='error'`，错误消息走 `formatApiError`。
