@@ -154,7 +154,8 @@ GET /api/v1/stocks/{stock_code}/analysis?query={query}&workflow_run_id={workflow
     "updated_at": "2026-05-13T11:00:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_110010"
+    "request_id": "req_20260513_110010",
+    "report_run_id": "rpt_20260513_002594_0001"
   }
 }
 ```
@@ -188,6 +189,7 @@ GET /api/v1/stocks/{stock_code}/industry-details?workflow_run_id={workflow_run_i
   "data": {
     "stock_code": "002594.SZ",
     "ticker": "002594",
+    "report_run_id": "rpt_20260513_002594_0002",
     "industry_entity_id": "ent_industry_new_energy_vehicle",
     "industry_name": "新能源汽车",
     "policy_support_level": "high",
@@ -206,7 +208,8 @@ GET /api/v1/stocks/{stock_code}/industry-details?workflow_run_id={workflow_run_i
     "updated_at": "2026-05-13T11:00:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_110020"
+    "request_id": "req_20260513_110020",
+    "report_run_id": "rpt_20260513_002594_0002"
   }
 }
 ```
@@ -229,6 +232,7 @@ GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_r
   "data": {
     "stock_code": "002594.SZ",
     "ticker": "002594",
+    "report_run_id": "rpt_20260513_002594_0003",
     "ranker": "report_event_impact_ranker_v1",
     "items": [
       {
@@ -244,7 +248,8 @@ GET /api/v1/stocks/{stock_code}/event-impact-ranking?workflow_run_id={workflow_r
     "updated_at": "2026-05-13T11:00:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_110030"
+    "request_id": "req_20260513_110030",
+    "report_run_id": "rpt_20260513_002594_0003"
   }
 }
 ```
@@ -286,7 +291,8 @@ GET /api/v1/stocks/{stock_code}/benefits-risks?workflow_run_id={workflow_run_id}
     "updated_at": "2026-05-13T11:00:00+08:00"
   },
   "meta": {
-    "request_id": "req_20260513_110040"
+    "request_id": "req_20260513_110040",
+    "report_run_id": "rpt_20260513_002594_0001"
   }
 }
 ```

@@ -28,6 +28,7 @@ class Meta(BaseModel):
     request_id: str = Field(default_factory=new_request_id)
     data_state: str | None = None
     refresh_task_id: str | None = None
+    report_run_id: str | None = None
 
 
 class SingleResponse(BaseModel, Generic[T]):

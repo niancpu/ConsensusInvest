@@ -77,14 +77,14 @@ def test_agent_swarm_writes_runtime_events_without_changing_output(tmp_path):
     )
 
     assert outcome.status == "completed"
-    assert len(outcome.agent_argument_ids) == 3
+    assert len(outcome.agent_argument_ids) == 6
     assert len(outcome.round_summary_ids) == 3
     events = event_repository.list_events(
         workflow_run_id="wr_agent_runtime_events_001",
         correlation_id="corr_agent_runtime_events_001",
     )
-    assert [event.event_type for event in events].count("started") == 2
-    assert [event.event_type for event in events].count("completed") == 2
+    assert [event.event_type for event in events].count("started") == 3
+    assert [event.event_type for event in events].count("completed") == 3
     assert any(
         event.event_type == "status_changed"
         and event.payload["agent_argument_id"] == outcome.agent_argument_ids[0]

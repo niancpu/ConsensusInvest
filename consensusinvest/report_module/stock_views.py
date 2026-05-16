@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from consensusinvest.common.errors import NotFoundError, ValidationError
+from consensusinvest.evidence_store.models import EvidenceDetail
 
 from .runtime_reader import ReportRuntimeReader
 from ._utils import _dedupe, _dt, _jsonable, _now_iso
@@ -141,10 +142,7 @@ def build_stock_analysis_view(
 
     action: ActionView | None = None
     risks: list[RiskItem] = []
-    summary_text = (
-        "报告视图基于已入库 Evidence Structure 与 MarketSnapshot 拼装，"
-        "未运行主 workflow；不含 Agent Swarm 论证或 Judge 结论。"
-    )
+    summary_text = ""
     if judgment is not None:
         action = ActionView(
             label=_action_label(judgment.final_signal),
@@ -159,6 +157,7 @@ def build_stock_analysis_view(
         summary_text = judgment.reasoning
     else:
         risks = _risk_disclosures(evidence_records)
+        summary_text = "；".join(_summary(detail) for detail in evidence_records[:3] if _summary(detail).strip())
 
     key_evidence = [
         KeyEvidence(
@@ -246,6 +245,14 @@ def build_stock_analysis_view(
         output_snapshot=output_snapshot,
         limitations=_stock_limitations(view.report_mode),
         refresh_task_id=refresh_task_id,
+        input_snapshot={
+            "view": "stock_analysis",
+            "stock_code": stock_code,
+            "query": query,
+            "workflow_run_id": workflow_run_id,
+            "latest": latest,
+            "refresh": refresh.value,
+        },
     )
     return view, refresh_task_id
 
@@ -268,9 +275,11 @@ def build_industry_details_view(
 
     evidence_records = _industry_evidence(reader, entity, industry_relation, industry, workflow_run_id=workflow_run_id)
     policy_support_level = _policy_support_level(evidence_records)
+    report_run_id = _report_run_id(reader, _ticker(entity) or "")
     view = IndustryDetailsView(
         stock_code=_stock_code(entity) or stock_code,
         ticker=_ticker(entity) or "",
+        report_run_id=report_run_id,
         industry_entity_id=industry.entity_id,
         industry_name=industry.name,
         policy_support_level=policy_support_level,
@@ -300,6 +309,33 @@ def build_industry_details_view(
         ),
         updated_at=_now_iso(),
     )
+    _save_report_run(
+        reader=reader,
+        report_run_id=report_run_id,
+        ticker=view.ticker,
+        stock_code=view.stock_code,
+        report_mode=ReportMode.WITH_WORKFLOW_TRACE if workflow_run_id else ReportMode.REPORT_GENERATION,
+        data_state=DataState.READY if view.referenced_evidence_ids or view.market_snapshot_ids else DataState.MISSING,
+        workflow_run_id=workflow_run_id,
+        judgment_id=None,
+        entity_id=entity.entity_id,
+        input_refs=_input_refs(
+            evidence_ids=view.referenced_evidence_ids,
+            market_snapshot_ids=view.market_snapshot_ids,
+            workflow_run_id=workflow_run_id,
+            judgment_id=None,
+        ),
+        output_snapshot=_jsonable(view),
+        limitations=_stock_limitations(
+            ReportMode.WITH_WORKFLOW_TRACE if workflow_run_id else ReportMode.REPORT_GENERATION
+        ),
+        refresh_task_id=None,
+        input_snapshot={
+            "view": "industry_details",
+            "stock_code": stock_code,
+            "workflow_run_id": workflow_run_id,
+        },
+    )
     return view
 
 
@@ -315,9 +351,11 @@ def build_event_impact_ranking(
         raise ValidationError("Query parameter `limit` must be between 1 and 50.")
     entity = _required_stock(reader, stock_code)
     evidence_records = _event_evidence(reader, entity, workflow_run_id=workflow_run_id, limit=limit)
-    return EventImpactRankingView(
+    report_run_id = _report_run_id(reader, _ticker(entity) or "")
+    view = EventImpactRankingView(
         stock_code=_stock_code(entity) or stock_code,
         ticker=_ticker(entity) or "",
+        report_run_id=report_run_id,
         ranker="report_event_impact_ranker_v1",
         items=[
             EventImpactItem(
@@ -333,6 +371,35 @@ def build_event_impact_ranking(
         ],
         updated_at=_now_iso(),
     )
+    _save_report_run(
+        reader=reader,
+        report_run_id=report_run_id,
+        ticker=view.ticker,
+        stock_code=view.stock_code,
+        report_mode=ReportMode.WITH_WORKFLOW_TRACE if workflow_run_id else ReportMode.REPORT_GENERATION,
+        data_state=DataState.READY if view.items else DataState.MISSING,
+        workflow_run_id=workflow_run_id,
+        judgment_id=None,
+        entity_id=entity.entity_id,
+        input_refs=_input_refs(
+            evidence_ids=_dedupe(evidence_id for item in view.items for evidence_id in item.evidence_ids),
+            market_snapshot_ids=[],
+            workflow_run_id=workflow_run_id,
+            judgment_id=None,
+        ),
+        output_snapshot=_jsonable(view),
+        limitations=_stock_limitations(
+            ReportMode.WITH_WORKFLOW_TRACE if workflow_run_id else ReportMode.REPORT_GENERATION
+        ),
+        refresh_task_id=None,
+        input_snapshot={
+            "view": "event_impact_ranking",
+            "stock_code": stock_code,
+            "workflow_run_id": workflow_run_id,
+            "limit": limit,
+        },
+    )
+    return view
 
 
 

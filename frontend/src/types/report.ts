@@ -64,6 +64,7 @@ export type StockAnalysisView = {
 export type IndustryDetailsView = {
   stock_code: string;
   ticker: string;
+  report_run_id: string;
   industry_entity_id: string;
   industry_name: string;
   policy_support_level: 'low' | 'medium' | 'high';
@@ -78,6 +79,7 @@ export type IndustryDetailsView = {
 export type EventImpactRankingView = {
   stock_code: string;
   ticker: string;
+  report_run_id: string;
   ranker: string;
   items: Array<{
     event_name: string;
@@ -102,6 +104,7 @@ export type BenefitsRisksView = {
 };
 
 export type IndexOverview = {
+  report_run_id: string;
   indices: Array<{
     name: string;
     code: string;
@@ -122,6 +125,7 @@ export type IndexOverview = {
 };
 
 export type IndexIntraday = {
+  report_run_id: string;
   code: string;
   name: string;
   trade_date: string;
@@ -159,6 +163,7 @@ export type SearchTaskStatusView = {
 };
 
 export type MarketStocksList = {
+  report_run_id: string;
   list: Array<{
     stock_code: string;
     ticker: string;
