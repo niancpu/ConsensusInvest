@@ -18,3 +18,7 @@ wheels/
 /CLAUDE.md
 start claude.bat
 start cx.bat
+
+node_modules/
+.vite/
+vite.*
