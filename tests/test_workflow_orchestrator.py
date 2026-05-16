@@ -552,4 +552,5 @@ def test_workflow_orchestrator_marks_agent_runtime_error_as_workflow_failed() ->
     failed_event = service.list_events(run.workflow_run_id)[-1]
     assert failed_event.event_type == "workflow_failed"
     assert failed_event.payload["code"] == "agent_swarm_failed"
+    assert failed_event.payload["failed_stage"] == "debate"
     assert "没有可用的模型 API key" in failed_event.payload["message"]

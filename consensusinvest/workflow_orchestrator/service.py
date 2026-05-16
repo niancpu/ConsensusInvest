@@ -148,10 +148,10 @@ class WorkflowOrchestrator:
             evidence_items_structured=self._structured_count(run, evidence_ids),
             agent_arguments_completed=0,
         )
-        self.repository.update_run(workflow_run_id, progress=progress)
+        run = self.repository.update_run(workflow_run_id, progress=progress)
 
         envelope = self._envelope(run, suffix="agent_swarm")
-        self.repository.update_run(workflow_run_id, stage="debate")
+        run = self.repository.update_run(workflow_run_id, stage="debate")
         try:
             swarm_outcome = self.agent_swarm.run(
                 envelope,
@@ -201,7 +201,7 @@ class WorkflowOrchestrator:
             evidence_items_structured=self._structured_count(run, evidence_ids),
             agent_arguments_completed=len(swarm_outcome.agent_argument_ids),
         )
-        self.repository.update_run(workflow_run_id, progress=progress, stage="judge")
+        run = self.repository.update_run(workflow_run_id, progress=progress, stage="judge")
         self.repository.append_event(workflow_run_id, "judge_started", {}, created_at=_timestamp(run.analysis_time))
 
         try:
@@ -676,7 +676,11 @@ class WorkflowOrchestrator:
         self.repository.append_event(
             run.workflow_run_id,
             "workflow_failed",
-            {"code": "insufficient_evidence", "gaps": [_to_plain(gap) for gap in gaps]},
+            {
+                "code": "insufficient_evidence",
+                "failed_stage": run.stage,
+                "gaps": [_to_plain(gap) for gap in gaps],
+            },
             created_at=_timestamp(run.analysis_time),
         )
         return self.repository.update_run(
@@ -694,7 +698,7 @@ class WorkflowOrchestrator:
         self.repository.append_event(
             run.workflow_run_id,
             "workflow_failed",
-            {"code": code, "message": message},
+            {"code": code, "failed_stage": run.stage, "message": message},
             created_at=_timestamp(run.analysis_time),
         )
         return self.repository.update_run(

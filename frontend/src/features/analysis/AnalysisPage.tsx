@@ -140,6 +140,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
   const latestStatus = snapshot?.workflow_run.status ?? 'idle';
   const latestStage = snapshot?.workflow_run.stage ?? 'idle';
   const isWorkflowFailed = latestStatus === 'failed' || latestStage === 'failed';
+  const failedStage = useMemo(() => findFailedStage(events), [events]);
   const hasWorkflow = Boolean(workflowRunId);
   const hasTraceNodes = !isWorkflowFailed && (trace?.trace_nodes.length ?? 0) > 0;
   const graph = useMemo(
@@ -580,6 +581,7 @@ function AnalysisPage({ routeTicker, routeRunId }: AnalysisPageProps) {
         eventCount={events.length}
         latestStatus={latestStatus}
         latestStage={latestStage}
+        failedStage={failedStage}
         errorMessage={errorMessage}
       />
 
@@ -726,6 +728,15 @@ function syncAnalysisRoute(workflowRunId: string, ticker: string): void {
   if (window.location.hash !== nextHash) {
     window.history.replaceState(null, '', nextHash);
   }
+}
+
+function findFailedStage(events: WorkflowEvent[]): string {
+  const failedEvent = [...events].reverse().find((event) => event.event_type === 'workflow_failed');
+  if (!failedEvent) {
+    return '';
+  }
+  const failedStage = failedEvent.payload.failed_stage;
+  return typeof failedStage === 'string' ? failedStage : '';
 }
 
 export default AnalysisPage;
